@@ -115,6 +115,7 @@ bool VPRecipeBase::mayWriteToMemory() const {
   case VPPredInstPHISC:
   case VPExpandSCEVSC:
   case VPConditionalInductionPHISC:
+  case VPWidenFirstFaultingLoadSC:
     return false;
   case VPBlendSC:
   case VPReductionEVLSC:
@@ -155,6 +156,7 @@ bool VPRecipeBase::mayReadFromMemory() const {
   }
   case VPWidenLoadEVLSC:
   case VPWidenLoadSC:
+  case VPWidenFirstFaultingLoadSC:
     return true;
   case VPReplicateSC:
     return cast<Instruction>(getVPSingleValue()->getUnderlyingValue())
@@ -217,6 +219,7 @@ bool VPRecipeBase::mayHaveSideEffects() const {
   case VPVectorEndPointerSC:
   case VPExpandSCEVSC:
   case VPConditionalInductionPHISC:
+  case VPWidenFirstFaultingLoadSC:
     return false;
   case VPInstructionSC: {
     auto *VPI = cast<VPInstruction>(this);
@@ -4490,6 +4493,11 @@ void VPPredInstPHIRecipe::printRecipe(raw_ostream &O, const Twine &Indent,
 VPRecipeBase *VPWidenLoadRecipe::getAsRecipe() { return this; }
 const VPRecipeBase *VPWidenLoadRecipe::getAsRecipe() const { return this; }
 
+VPRecipeBase *VPWidenFirstFaultingLoadRecipe::getAsRecipe() { return this; }
+const VPRecipeBase *VPWidenFirstFaultingLoadRecipe::getAsRecipe() const {
+  return this;
+}
+
 VPRecipeBase *VPWidenLoadEVLRecipe::getAsRecipe() { return this; }
 const VPRecipeBase *VPWidenLoadEVLRecipe::getAsRecipe() const { return this; }
 
@@ -4503,12 +4511,16 @@ InstructionCost VPWidenMemoryRecipe::computeCost(ElementCount VF,
                                                  VPCostContext &Ctx) const {
   const VPRecipeBase *R = getAsRecipe();
   bool IsLoad = isa<VPWidenLoadRecipe, VPWidenLoadEVLRecipe>(R);
-  Type *ScalarTy = IsLoad ? cast<VPSingleDefRecipe>(R)->getScalarType()
-                          : R->getOperand(1)->getScalarType();
+  bool IsFFLoad = isa<VPWidenFirstFaultingLoadRecipe>(R);
+  Type *ScalarTy = IsLoad     ? cast<VPSingleDefRecipe>(R)->getScalarType()
+                   : IsFFLoad ? cast<VPWidenFirstFaultingLoadRecipe>(R)
+                                    ->getResult()
+                                    ->getScalarType()
+                              : R->getOperand(1)->getScalarType();
   Type *Ty = toVectorTy(ScalarTy, VF);
   unsigned AS =
       cast<PointerType>(getAddr()->getScalarType())->getAddressSpace();
-  unsigned Opcode = IsLoad ? Instruction::Load : Instruction::Store;
+  unsigned Opcode = IsLoad || IsFFLoad ? Instruction::Load : Instruction::Store;
 
   if (!Consecutive) {
     // TODO: Using the original IR may not be accurate.
@@ -4522,7 +4534,9 @@ InstructionCost VPWidenMemoryRecipe::computeCost(ElementCount VF,
     if (!vputils::isSingleScalar(getAddr()))
       PtrTy = toVectorTy(PtrTy, VF);
 
-    unsigned IID = isa<VPWidenLoadRecipe>(R)      ? Intrinsic::masked_gather
+    unsigned IID = isa<VPWidenLoadRecipe>(R) ? Intrinsic::masked_gather
+                   : isa<VPWidenFirstFaultingLoadRecipe>(R)
+                       ? Intrinsic::vp_load_ff
                    : isa<VPWidenStoreRecipe>(R)   ? Intrinsic::masked_scatter
                    : isa<VPWidenLoadEVLRecipe>(R) ? Intrinsic::vp_gather
                                                   : Intrinsic::vp_scatter;
@@ -4537,13 +4551,17 @@ InstructionCost VPWidenMemoryRecipe::computeCost(ElementCount VF,
   InstructionCost Cost = 0;
   if (IsMasked) {
     unsigned IID = isa<VPWidenLoadRecipe>(R) ? Intrinsic::masked_load
-                                             : Intrinsic::masked_store;
+                   : isa<VPWidenFirstFaultingLoadRecipe>(R)
+                       ? Intrinsic::vp_load_ff
+                       : Intrinsic::masked_store;
     Cost += Ctx.TTI.getMemIntrinsicInstrCost(
         MemIntrinsicCostAttributes(IID, Ty, Alignment, AS), Ctx.CostKind);
   } else {
-    TTI::OperandValueInfo OpInfo = Ctx.getOperandInfo(
-        isa<VPWidenLoadRecipe, VPWidenLoadEVLRecipe>(R) ? R->getOperand(0)
-                                                        : R->getOperand(1));
+    TTI::OperandValueInfo OpInfo =
+        Ctx.getOperandInfo(isa<VPWidenLoadRecipe, VPWidenLoadEVLRecipe,
+                               VPWidenFirstFaultingLoadRecipe>(R)
+                               ? R->getOperand(0)
+                               : R->getOperand(1));
     Cost += Ctx.TTI.getMemoryOpCost(Opcode, Ty, Alignment, AS, Ctx.CostKind,
                                     OpInfo, &Ingredient);
   }
@@ -4584,6 +4602,45 @@ void VPWidenLoadRecipe::printRecipe(raw_ostream &O, const Twine &Indent,
   O << " = load ";
   printOperands(O, SlotTracker);
   O << ", align " << getAlign().value();
+}
+#endif
+
+void VPWidenFirstFaultingLoadRecipe::execute(VPTransformState &State) {
+  auto &Builder = State.Builder;
+
+  Type *ScalarDataTy = getIngredient().getType();
+  auto *DataTy = VectorType::get(ScalarDataTy, State.VF);
+  Value *Mask = nullptr;
+  if (auto *VPMask = getMask())
+    Mask = State.get(VPMask);
+
+  Value *AddrIR = State.get(getAddr(), true);
+
+  auto *IdxTy = Builder.getInt32Ty();
+  Value *RuntimeVF = getRuntimeVF(Builder, IdxTy, State.VF);
+  CallInst *FFLoad = Builder.CreateFirstFaultingLoad(
+      DataTy, AddrIR, Alignment, Mask, RuntimeVF, "wide.load.ff");
+  applyMetadata(*cast<Instruction>(FFLoad));
+  auto *ResultIR = Builder.CreateExtractValue(FFLoad, 0, "wide.load.ff.val");
+  auto *CountIR = Builder.CreateExtractValue(FFLoad, 1, "wide.load.ff.count");
+
+  State.set(Result, ResultIR);
+  State.set(Count, CountIR, true);
+}
+
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
+void VPWidenFirstFaultingLoadRecipe::printRecipe(
+    raw_ostream &O, const Twine &Indent, VPSlotTracker &SlotTracker) const {
+  O << Indent << "WIDEN-FF ";
+  bool first = true;
+  for (auto *Def : definedValues()) {
+    if (!first)
+      O << ", ";
+    Def->printAsOperand(O, SlotTracker);
+    first = false;
+  }
+  O << " = load ";
+  printOperands(O, SlotTracker);
 }
 #endif
 

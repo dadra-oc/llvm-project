@@ -183,6 +183,17 @@ static cl::opt<ElementCount> EpilogueVectorizationForceVF(
              "1 is specified, forces the given VF for all applicable epilogue "
              "loops. Note: This allows all scalable VFs >= vscale x 1."));
 
+/// Enable using first-only-fault loads.
+static cl::opt<bool> EnableFirstFaultingLoad(
+    "enable-first-faulting-load", cl::init(true), cl::Hidden,
+    cl::desc("Enables using first faulting load widening on those "
+             "that are not safely dereferenceable otherwise"));
+
+static cl::opt<bool> ForceTargetSupportsFirstOnlyFaultLoads(
+    "force-target-supports-first-only-fault-load", cl::init(false), cl::Hidden,
+    cl::desc("Flag that overrides target first only fault load support for"
+             "testing"));
+
 // Returns true if the epilogue VF has been set to a non-zero value other than
 // VF=1 (scalar).
 static bool hasForcedEpilogueVF() {
@@ -280,6 +291,11 @@ static std::optional<ElementCount> getSmallBestKnownTC(
       return ElementCount::getFixed(RefinedTC);
 
   return std::nullopt;
+}
+
+static bool isFirstFaultingLoadsAllowed(const TargetTransformInfo &TTI) {
+  return (EnableFirstFaultingLoad && TTI.supportsFirstOnlyFaultLoads()) ||
+         ForceTargetSupportsFirstOnlyFaultLoads;
 }
 
 namespace {
@@ -2940,6 +2956,7 @@ static bool willGenerateVectors(VPlan &Plan, ElementCount VF,
       case VPRecipeBase::VPInterleaveSC:
       case VPRecipeBase::VPWidenLoadEVLSC:
       case VPRecipeBase::VPWidenLoadSC:
+      case VPRecipeBase::VPWidenFirstFaultingLoadSC:
       case VPRecipeBase::VPWidenStoreEVLSC:
       case VPRecipeBase::VPWidenStoreSC:
         break;
@@ -5809,7 +5826,7 @@ bool VPRecipeBuilder::prefersVectorizedAddressing() const {
 }
 
 VPRecipeBase *VPRecipeBuilder::tryToWidenMemory(VPInstruction *VPI,
-                                                VFRange &Range) {
+                                                VFRange &Range, VPlan &Plan) {
   assert((VPI->getOpcode() == Instruction::Load ||
           VPI->getOpcode() == Instruction::Store) &&
          "Must be called with either a load or store");
@@ -5856,6 +5873,17 @@ VPRecipeBase *VPRecipeBuilder::tryToWidenMemory(VPInstruction *VPI,
 
   if (VPI->getOpcode() == Instruction::Load) {
     auto *Load = cast<LoadInst>(I);
+    if (Plan.isPotentiallyFaultingLoad(Load)) {
+      auto *FFLoadR = new VPWidenFirstFaultingLoadRecipe(
+          *Load, Ptr, Mask, Consecutive, *VPI, Load->getDebugLoc());
+
+      if (Reverse) {
+        // The potentially faulting load set can only contain positive unit
+        // stride loads. Legality checks should discard vectorization otherwise.
+        llvm_unreachable("Potentially faulting load can only be Unit Stride");
+      }
+      return FFLoadR;
+    }
     auto *LoadR =
         Builder.createWidenLoad(*Load, Ptr, Mask, Consecutive, Load->getAlign(),
                                 *VPI, Load->getDebugLoc());
@@ -6294,7 +6322,7 @@ LoopVectorizationPlanner::tryToBuildVPlan1(LoopVectorizationCostModel &PlanCM) {
         UncountableExitStyle::MaskedHandleExitInVectorLoop;
     if (!RUN_VPLAN_PASS(VPlanTransforms::handleUncountableEarlyExits, *VPlan0,
                         ORE, OrigLoop, PSE, *DT, Legal->getAssumptionCache(),
-                        EEStyle)) {
+                        EEStyle, isFirstFaultingLoadsAllowed(TTI))) {
       return nullptr;
     }
 
@@ -6486,13 +6514,13 @@ LoopVectorizationPlanner::tryToBuildVPlan(VPlanPtr Plan, VFRange &Range,
     // All types but VPInstructions are already widened and don't need extra
     // processing. We process VPInstructions below.
     assert(
-        all_of(
-            make_range(VPBB->getFirstNonPhi(), VPBB->end()),
-            IsaPred<VPWidenCanonicalIVRecipe, VPBlendRecipe, VPReductionRecipe,
-                    VPReplicateRecipe, VPWidenLoadRecipe, VPWidenStoreRecipe,
-                    VPWidenCallRecipe, VPWidenIntrinsicRecipe,
-                    VPVectorPointerRecipe, VPVectorEndPointerRecipe,
-                    VPHistogramRecipe, VPInstruction>) &&
+        all_of(make_range(VPBB->getFirstNonPhi(), VPBB->end()),
+               IsaPred<VPWidenCanonicalIVRecipe, VPBlendRecipe,
+                       VPReductionRecipe, VPReplicateRecipe, VPWidenLoadRecipe,
+                       VPWidenFirstFaultingLoadRecipe, VPWidenStoreRecipe,
+                       VPWidenCallRecipe, VPWidenIntrinsicRecipe,
+                       VPVectorPointerRecipe, VPVectorEndPointerRecipe,
+                       VPHistogramRecipe, VPInstruction>) &&
         "Unexpected recipe");
     for (VPInstruction &VPI :
          make_early_inc_range(make_isa_range<VPInstruction>(*VPBB))) {
@@ -6544,6 +6572,7 @@ LoopVectorizationPlanner::tryToBuildVPlan(VPlanPtr Plan, VFRange &Range,
   RUN_VPLAN_PASS(VPlanTransforms::optimizeInductionLiveOutUsers, *Plan, PSE,
                  OrigLoop);
 
+  RUN_VPLAN_PASS(VPlanTransforms::handleFirstFaultingLoadMasks, *Plan);
   // Apply mandatory transformation to handle reductions with multiple in-loop
   // uses if possible, bail out otherwise.
   if (!RUN_VPLAN_PASS(VPlanTransforms::handleMultiUseReductions, *Plan, ORE,

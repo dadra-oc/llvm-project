@@ -146,6 +146,10 @@ public:
   }
   std::optional<unsigned> getVScaleForTuning() const override;
 
+  bool supportsFirstOnlyFaultLoads() const override {
+    return ST->hasVInstructions();
+  }
+
   TypeSize
   getRegisterBitWidth(TargetTransformInfo::RegisterKind K) const override;
 

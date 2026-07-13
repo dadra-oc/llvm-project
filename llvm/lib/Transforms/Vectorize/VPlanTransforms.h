@@ -393,11 +393,11 @@ struct VPlanTransforms {
   /// Check if all loads in the loop are dereferenceable. Iterates over the
   /// loop body blocks reachable from \p HeaderVPBB. Returns false if any
   /// non-dereferenceable load is found.
-  static bool areAllLoadsDereferenceable(VPBasicBlock *HeaderVPBB,
+  static bool areAllLoadsDereferenceable(VPlan &Plan, VPBasicBlock *HeaderVPBB,
                                          Loop *TheLoop,
                                          PredicatedScalarEvolution &PSE,
-                                         DominatorTree &DT,
-                                         AssumptionCache *AC);
+                                         DominatorTree &DT, AssumptionCache *AC,
+                                         bool supportsFirstOnlyFaultLoads);
 
   /// If a single exit has multiple conditions combined together, split them
   /// and create new exiting blocks. Currently limited to a single exit in the
@@ -414,7 +414,8 @@ struct VPlanTransforms {
   handleUncountableEarlyExits(VPlan &Plan, OptimizationRemarkEmitter *ORE,
                               Loop *TheLoop, PredicatedScalarEvolution &PSE,
                               DominatorTree &DT, AssumptionCache *AC,
-                              UncountableExitStyle &Style);
+                              UncountableExitStyle &Style,
+                              bool supportsFirstOnlyFaultLoads);
 
   /// Disconnect countable early exits from the loop.
   LLVM_ABI_FOR_TEST static void handleCountableEarlyExits(VPlan &Plan);
@@ -667,6 +668,10 @@ struct VPlanTransforms {
   static void narrowInductionTruncates(VPlan &Plan, VFRange &Range,
                                        const TargetTransformInfo &TTI,
                                        PredicatedScalarEvolution &PSE);
+
+  /// Transforms the VPlan containing first faulting loads to introduce
+  /// the necessary masks depending on ff-load active lanes.
+  static void handleFirstFaultingLoadMasks(VPlan &Plan);
 };
 
 } // namespace llvm
