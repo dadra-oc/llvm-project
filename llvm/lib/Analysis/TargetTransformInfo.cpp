@@ -1639,6 +1639,10 @@ bool TargetTransformInfo::enableScalableVectorization() const {
   return TTIImpl->enableScalableVectorization();
 }
 
+bool TargetTransformInfo::supportsFirstOnlyFaultLoads() const {
+  return TTIImpl->supportsFirstOnlyFaultLoads();
+}
+
 bool TargetTransformInfo::hasActiveVectorLength() const {
   return TTIImpl->hasActiveVectorLength();
 }
