@@ -397,7 +397,7 @@ struct VPlanTransforms {
                                          Loop *TheLoop,
                                          PredicatedScalarEvolution &PSE,
                                          DominatorTree &DT, AssumptionCache *AC,
-                                         bool supportsFirstOnlyFaultLoads);
+                                         bool AllowFirstFaultingLoads);
 
   /// If a single exit has multiple conditions combined together, split them
   /// and create new exiting blocks. Currently limited to a single exit in the
@@ -415,7 +415,7 @@ struct VPlanTransforms {
                               Loop *TheLoop, PredicatedScalarEvolution &PSE,
                               DominatorTree &DT, AssumptionCache *AC,
                               UncountableExitStyle &Style,
-                              bool supportsFirstOnlyFaultLoads);
+                              bool AllowFirstFaultingLoads);
 
   /// Disconnect countable early exits from the loop.
   LLVM_ABI_FOR_TEST static void handleCountableEarlyExits(VPlan &Plan);
@@ -670,7 +670,9 @@ struct VPlanTransforms {
                                        PredicatedScalarEvolution &PSE);
 
   /// Transforms the VPlan containing first faulting loads to introduce
-  /// the necessary masks depending on ff-load active lanes.
+  /// the necessary masks depending on ff-load active lanes, and to step the
+  /// vector loop by the number of loaded lanes using a
+  /// VPCurrentIterationPHIRecipe.
   static void handleFirstFaultingLoadMasks(VPlan &Plan);
 };
 
