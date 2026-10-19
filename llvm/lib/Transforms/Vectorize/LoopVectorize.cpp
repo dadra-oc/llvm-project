@@ -185,14 +185,10 @@ static cl::opt<ElementCount> EpilogueVectorizationForceVF(
 
 /// Enable using first-only-fault loads.
 static cl::opt<bool> EnableFirstFaultingLoad(
-    "enable-first-faulting-load", cl::init(true), cl::Hidden,
+    "enable-first-faulting-load", cl::init(false), cl::Hidden,
     cl::desc("Enables using first faulting load widening on those "
              "that are not safely dereferenceable otherwise"));
 
-static cl::opt<bool> ForceTargetSupportsFirstOnlyFaultLoads(
-    "force-target-supports-first-only-fault-load", cl::init(false), cl::Hidden,
-    cl::desc("Flag that overrides target first only fault load support for"
-             "testing"));
 
 // Returns true if the epilogue VF has been set to a non-zero value other than
 // VF=1 (scalar).
@@ -291,11 +287,6 @@ static std::optional<ElementCount> getSmallBestKnownTC(
       return ElementCount::getFixed(RefinedTC);
 
   return std::nullopt;
-}
-
-static bool isFirstFaultingLoadsAllowed(const TargetTransformInfo &TTI) {
-  return (EnableFirstFaultingLoad && TTI.supportsFirstOnlyFaultLoads()) ||
-         ForceTargetSupportsFirstOnlyFaultLoads;
 }
 
 namespace {
@@ -2846,6 +2837,9 @@ void LoopVectorizationPlanner::emitInvalidCostRemarks(
             .Case(
                 [](const VPWidenStoreRecipe *R) { return Instruction::Store; })
             .Case([](const VPWidenLoadRecipe *R) { return Instruction::Load; })
+            .Case([](const VPWidenFirstFaultingLoadRecipe *R) {
+              return Instruction::Load;
+            })
             .Case([](const VPWidenStoreEVLRecipe *R) {
               return Instruction::Store;
             })
@@ -6322,7 +6316,7 @@ LoopVectorizationPlanner::tryToBuildVPlan1(LoopVectorizationCostModel &PlanCM) {
         UncountableExitStyle::MaskedHandleExitInVectorLoop;
     if (!RUN_VPLAN_PASS(VPlanTransforms::handleUncountableEarlyExits, *VPlan0,
                         ORE, OrigLoop, PSE, *DT, Legal->getAssumptionCache(),
-                        EEStyle, isFirstFaultingLoadsAllowed(TTI))) {
+                        EEStyle, EnableFirstFaultingLoad)) {
       return nullptr;
     }
 
