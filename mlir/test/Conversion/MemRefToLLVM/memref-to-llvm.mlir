@@ -863,6 +863,53 @@ func.func @store_with_alignment(%arg0 : memref<32xf32>, %arg1 : f32, %arg2 : ind
 
 // -----
 
+#tbaa_root = #llvm.tbaa_root<id = "root">
+#tbaa_desc = #llvm.tbaa_type_desc<id = "data", members = {<#tbaa_root, 0>}>
+#tbaa_tag = #llvm.tbaa_tag<base_type = #tbaa_desc, access_type = #tbaa_desc, offset = 0>
+
+// CHECK-LABEL: func @load_tbaa(
+// CHECK-INTERFACE-LABEL: func @load_tbaa(
+func.func @load_tbaa(%arg0 : memref<32xf32>, %arg1 : index) {
+  // CHECK: llvm.load %{{.*}} <tbaa = [#tbaa_tag]> : !llvm.ptr -> f32
+  // CHECK-INTERFACE: llvm.load %{{.*}} <tbaa = [#tbaa_tag]> : !llvm.ptr -> f32
+  %1 = memref.load %arg0[%arg1] {tbaa = [#tbaa_tag]} : memref<32xf32>
+  func.return
+}
+
+// -----
+
+#tbaa_root = #llvm.tbaa_root<id = "root">
+#tbaa_desc = #llvm.tbaa_type_desc<id = "data", members = {<#tbaa_root, 0>}>
+#tbaa_tag = #llvm.tbaa_tag<base_type = #tbaa_desc, access_type = #tbaa_desc, offset = 0>
+
+// CHECK-LABEL: func @store_tbaa(
+// CHECK-INTERFACE-LABEL: func @store_tbaa(
+func.func @store_tbaa(%arg0 : memref<32xf32>, %arg1 : f32, %arg2 : index) {
+  // CHECK: llvm.store %{{.*}}, %{{.*}} <tbaa = [#tbaa_tag]> : f32, !llvm.ptr
+  // CHECK-INTERFACE: llvm.store %{{.*}}, %{{.*}} <tbaa = [#tbaa_tag]> : f32, !llvm.ptr
+  memref.store %arg1, %arg0[%arg2] {tbaa = [#tbaa_tag]} : memref<32xf32>
+  func.return
+}
+
+// -----
+
+#alias_scope_domain = #llvm.alias_scope_domain<id = distinct[0]<>>
+#alias_scope = #llvm.alias_scope<id = distinct[1]<>, domain = #alias_scope_domain>
+
+// CHECK-LABEL: func @load_store_tbaa_wrong_kind(
+// CHECK-INTERFACE-LABEL: func @load_store_tbaa_wrong_kind(
+func.func @load_store_tbaa_wrong_kind(%arg0 : memref<32xf32>, %arg1 : index) {
+  // CHECK: llvm.load %{{[0-9]+}} : !llvm.ptr -> f32
+  // CHECK-INTERFACE: llvm.load %{{[0-9]+}} : !llvm.ptr -> f32
+  %1 = memref.load %arg0[%arg1] {tbaa = 1 : i32} : memref<32xf32>
+  // CHECK: llvm.store %{{[0-9]+}}, %{{[0-9]+}} : f32, !llvm.ptr
+  // CHECK-INTERFACE: llvm.store %{{[0-9]+}}, %{{[0-9]+}} : f32, !llvm.ptr
+  memref.store %1, %arg0[%arg1] {tbaa = [#alias_scope]} : memref<32xf32>
+  func.return
+}
+
+// -----
+
 // Ensure unconvertable memory space not cause a crash
 
 // CHECK-LABEL: @alloca_unconvertable_memory_space

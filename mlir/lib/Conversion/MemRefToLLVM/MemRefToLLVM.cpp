@@ -693,6 +693,16 @@ struct LoadStoreOpLowering : public ConvertOpToLLVMPattern<Derived> {
   using Base = LoadStoreOpLowering<Derived>;
 };
 
+/// Copies the TBAA tags of `from` onto the lowered operation `to`.
+template <typename LLVMOpTy>
+static void copyTBAATags(Operation *from, LLVMOpTy to) {
+  auto tags = dyn_cast_or_null<ArrayAttr>(
+      from->getDiscardableAttr(to.getTbaaAttrName()));
+  if (tags && !tags.empty() &&
+      llvm::all_of(tags, llvm::IsaPred<LLVM::TBAATagAttr>))
+    to.setTBAATags(tags);
+}
+
 /// Wrap a llvm.cmpxchg operation in a while loop so that the operation can be
 /// retried until it succeeds in atomically storing a new value into memory.
 ///
@@ -986,10 +996,11 @@ struct LoadOpLowering : public LoadStoreOpLowering<memref::LoadOp> {
     Value dataPtr = getStridedElementPtr(
         rewriter, loadOp.getLoc(), type, adaptor.getMemref(),
         adaptor.getIndices(), getLoadStoreNoWrapFlags(type));
-    rewriter.replaceOpWithNewOp<LLVM::LoadOp>(
+    auto newLoad = rewriter.replaceOpWithNewOp<LLVM::LoadOp>(
         loadOp, typeConverter->convertType(type.getElementType()), dataPtr,
         loadOp.getAlignment().value_or(0), false, loadOp.getNontemporal(),
         /*isInvariant=*/loadOp.getInvariant());
+    copyTBAATags(loadOp, newLoad);
     return success();
   }
 };
@@ -1010,9 +1021,10 @@ struct StoreOpLowering : public LoadStoreOpLowering<memref::StoreOp> {
     Value dataPtr = getStridedElementPtr(
         rewriter, op.getLoc(), type, adaptor.getMemref(), adaptor.getIndices(),
         getLoadStoreNoWrapFlags(type));
-    rewriter.replaceOpWithNewOp<LLVM::StoreOp>(op, adaptor.getValue(), dataPtr,
-                                               op.getAlignment().value_or(0),
-                                               false, op.getNontemporal());
+    auto newStore = rewriter.replaceOpWithNewOp<LLVM::StoreOp>(
+        op, adaptor.getValue(), dataPtr, op.getAlignment().value_or(0), false,
+        op.getNontemporal());
+    copyTBAATags(op, newStore);
     return success();
   }
 };
