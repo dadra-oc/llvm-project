@@ -6309,6 +6309,16 @@ LoopVectorizationPlanner::tryToBuildVPlan1(LoopVectorizationCostModel &PlanCM) {
                         EEStyle, EnableFirstFaultingLoad)) {
       return nullptr;
     }
+    HasFirstFaultingLoads = any_of(
+        VPBlockUtils::blocksOnly<VPBasicBlock>(
+            vp_depth_first_shallow(VPlan0->getEntry())),
+        [](VPBasicBlock *VPBB) {
+          return any_of(*VPBB, [](VPRecipeBase &R) {
+            auto *VPI = dyn_cast<VPInstruction>(&R);
+            return VPI &&
+                   VPI->getOpcode() == VPInstruction::FaultOnlyFirstMask;
+          });
+        });
 
     // Exiting in the scalar loop requires a scalar epilogue for now.
     if (EEStyle == UncountableExitStyle::MaskedHandleExitInScalarLoop &&
@@ -7849,6 +7859,15 @@ bool LoopVectorizePass::processLoop(Loop *L) {
         dbgs() << "LV: Not interleaving due to conditional inductions.\n");
     IntDiagMsg = {"ConditionalInductionsPreventInterleaving",
                   "Unable to interleave due to conditional inductions."};
+    InterleaveLoop = false;
+    IC = 1;
+  }
+
+  if (InterleaveLoop && LVP.hasFirstFaultingLoads()) {
+    LLVM_DEBUG(dbgs() << "LV: Not interleaving loop with first-faulting "
+                         "loads.\n");
+    IntDiagMsg = {"FirstFaultingLoadPreventsInterleaving",
+                  "Loop with first-faulting loads, interleaving disabled."};
     InterleaveLoop = false;
     IC = 1;
   }

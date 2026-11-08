@@ -933,6 +933,10 @@ class LoopVectorizationPlanner {
 
   SmallVector<VPlanPtr, 4> VPlans;
 
+  /// Whether the loop has potentially faulting loads that are widened to
+  /// fault-only-first loads.
+  bool HasFirstFaultingLoads = false;
+
   /// Profitable vector factors.
   SmallVector<VectorizationFactor, 8> ProfitableVFs;
 
@@ -1042,6 +1046,10 @@ public:
     return any_of(VPlans,
                   [&](const VPlanPtr &Plan) { return Plan->hasVF(VF); });
   }
+
+  /// Returns true if the loop has potentially faulting loads that are widened
+  /// to fault-only-first loads.
+  bool hasFirstFaultingLoads() const { return HasFirstFaultingLoads; }
 
   /// Test a \p Predicate on a \p Range of VF's. Return the value of applying
   /// \p Predicate on Range.Start, possibly decreasing Range.End such that the

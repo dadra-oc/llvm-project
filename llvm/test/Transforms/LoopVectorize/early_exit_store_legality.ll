@@ -1167,6 +1167,84 @@ exit:
   ret i64 %rdx.next
 }
 
+define void @strided_condition_load(ptr noalias %array, ptr readonly %pred) {
+; CHECK-DEBUG-LABEL: LV: Checking a loop in 'strided_condition_load'
+; CHECK-DEBUG:       LV: Not vectorizing: Loop contains potentially faulting strided load.
+entry:
+  br label %for.body
+
+for.body:
+  %iv = phi i64 [ 0, %entry ], [ %iv.next, %for.inc ]
+  %st.addr = getelementptr inbounds nuw i16, ptr %array, i64 %iv
+  %data = load i16, ptr %st.addr, align 2
+  %inc = add nsw i16 %data, 1
+  store i16 %inc, ptr %st.addr, align 2
+  %ee.addr = getelementptr inbounds nuw i32, ptr %pred, i64 %iv
+  %ee.val = load i16, ptr %ee.addr, align 2
+  %ee.cond = icmp sgt i16 %ee.val, 500
+  br i1 %ee.cond, label %exit, label %for.inc
+
+for.inc:
+  %iv.next = add nuw nsw i64 %iv, 1
+  %counted.cond = icmp eq i64 %iv.next, 20
+  br i1 %counted.cond, label %exit, label %for.body
+
+exit:
+  ret void
+}
+
+define void @overlapping_condition_load(ptr noalias %array, ptr readonly %pred) {
+; CHECK-DEBUG-LABEL: LV: Checking a loop in 'overlapping_condition_load'
+; CHECK-DEBUG:       LV: Not vectorizing: Loop contains potentially faulting strided load.
+entry:
+  br label %for.body
+
+for.body:
+  %iv = phi i64 [ 0, %entry ], [ %iv.next, %for.inc ]
+  %st.addr = getelementptr inbounds nuw i16, ptr %array, i64 %iv
+  %data = load i16, ptr %st.addr, align 2
+  %inc = add nsw i16 %data, 1
+  store i16 %inc, ptr %st.addr, align 2
+  %ee.addr = getelementptr inbounds nuw i8, ptr %pred, i64 %iv
+  %ee.val = load i16, ptr %ee.addr, align 1
+  %ee.cond = icmp sgt i16 %ee.val, 500
+  br i1 %ee.cond, label %exit, label %for.inc
+
+for.inc:
+  %iv.next = add nuw nsw i64 %iv, 1
+  %counted.cond = icmp eq i64 %iv.next, 20
+  br i1 %counted.cond, label %exit, label %for.body
+
+exit:
+  ret void
+}
+
+define void @reverse_condition_load(ptr noalias %array, ptr readonly %pred) {
+; CHECK-DEBUG-LABEL: LV: Checking a loop in 'reverse_condition_load'
+; CHECK-DEBUG:       LV: Not vectorizing: Loop contains potentially faulting strided load.
+entry:
+  br label %for.body
+
+for.body:
+  %iv = phi i64 [ 19, %entry ], [ %iv.next, %for.inc ]
+  %st.addr = getelementptr inbounds nuw i16, ptr %array, i64 %iv
+  %data = load i16, ptr %st.addr, align 2
+  %inc = add nsw i16 %data, 1
+  store i16 %inc, ptr %st.addr, align 2
+  %ee.addr = getelementptr inbounds nuw i16, ptr %pred, i64 %iv
+  %ee.val = load i16, ptr %ee.addr, align 2
+  %ee.cond = icmp sgt i16 %ee.val, 500
+  br i1 %ee.cond, label %exit, label %for.inc
+
+for.inc:
+  %iv.next = add nsw i64 %iv, -1
+  %counted.cond = icmp eq i64 %iv.next, -1
+  br i1 %counted.cond, label %exit, label %for.body
+
+exit:
+  ret void
+}
+
 declare void @init_mem(ptr, i64);
 declare i64 @get_an_unknown_offset();
 

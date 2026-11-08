@@ -672,8 +672,10 @@ private:
   ///
   /// Currently, c[i] must have only one user (the comparison used for the
   /// uncountable exit) since we would otherwise need to introduce a PHI node
-  /// for it.
-  bool canUncountableExitConditionLoadBeMoved(BasicBlock *ExitingBlock);
+  /// for it. If it cannot be proven dereferenceable, it is added to
+  /// \p NonDerefLoads.
+  bool canUncountableExitConditionLoadBeMoved(
+      BasicBlock *ExitingBlock, SmallVectorImpl<LoadInst *> &NonDerefLoads);
 
   struct SafeAccessInfo {
     uint64_t MaxSizeInBytes = 0;
