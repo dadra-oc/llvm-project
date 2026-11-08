@@ -2,7 +2,7 @@
 ; RUN: opt -mtriple=riscv64 -mattr=+v -p loop-vectorize -force-vector-width=4 \
 ; RUN: -enable-early-exit-vectorization-with-side-effects \
 ; RUN: -enable-early-exit-vectorization -enable-first-faulting-load \
-; RUN: -disable-output -vplan-print-after=handleFirstFaultingLoadMasks < %s 2>&1 | FileCheck %s
+; RUN: -disable-output -vplan-print-after=handleFirstFaultingLoads < %s 2>&1 | FileCheck %s
 
 define i64 @early_exit_first_faulting_load(ptr %cond) {
 ; CHECK-LABEL: VPlan for loop in 'early_exit_first_faulting_load'
