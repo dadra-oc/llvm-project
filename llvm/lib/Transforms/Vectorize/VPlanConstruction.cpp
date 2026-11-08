@@ -1255,13 +1255,10 @@ void VPlanTransforms::createInLoopReductionRecipes(VPlan &Plan,
     R->eraseFromParent();
 }
 
-/// Check if all loads in the loop are dereferenceable. Iterates over the
-/// loop body blocks reachable from \p HeaderVPBB. Returns false if any
-/// non-dereferenceable load is found if first only fault is not allowed.
 bool VPlanTransforms::areAllLoadsDereferenceable(
-    VPlan &Plan, VPBasicBlock *HeaderVPBB, Loop *TheLoop,
-    PredicatedScalarEvolution &PSE, DominatorTree &DT, AssumptionCache *AC,
-    bool AllowFirstFaultingLoads) {
+    VPBasicBlock *HeaderVPBB, Loop *TheLoop, PredicatedScalarEvolution &PSE,
+    DominatorTree &DT, AssumptionCache *AC,
+    SmallVectorImpl<VPInstruction *> *FaultingLoads) {
   ScalarEvolution &SE = *PSE.getSE();
   const DataLayout &DL = TheLoop->getHeader()->getDataLayout();
   for (VPBasicBlock *VPBB : vp_rpo_plain_cfg_loop_body(HeaderVPBB)) {
@@ -1298,10 +1295,9 @@ bool VPlanTransforms::areAllLoadsDereferenceable(
       if (!isDereferenceableAndAlignedInLoop(PtrSCEV, Load->getAlign(),
                                              SizeSCEV, TheLoop, SE, DT, AC,
                                              &Preds)) {
-        if (AllowFirstFaultingLoads) {
-          // Tag this load so it is widened as first faulting
-          Plan.addPotentiallyFaultingLoad(Load);
+        if (FaultingLoads) {
           LLVM_DEBUG(dbgs() << "LV: Load may fault. Using first-fault load.\n");
+          FaultingLoads->push_back(VPI);
         } else {
           LLVM_DEBUG(dbgs()
                      << "LV: Not vectorizing: Auto-vectorization of loops with "

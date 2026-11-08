@@ -189,7 +189,6 @@ static cl::opt<bool> EnableFirstFaultingLoad(
     cl::desc("Enables using first faulting load widening on those "
              "that are not safely dereferenceable otherwise"));
 
-
 // Returns true if the epilogue VF has been set to a non-zero value other than
 // VF=1 (scalar).
 static bool hasForcedEpilogueVF() {
@@ -5820,7 +5819,7 @@ bool VPRecipeBuilder::prefersVectorizedAddressing() const {
 }
 
 VPRecipeBase *VPRecipeBuilder::tryToWidenMemory(VPInstruction *VPI,
-                                                VFRange &Range, VPlan &Plan) {
+                                                VFRange &Range) {
   assert((VPI->getOpcode() == Instruction::Load ||
           VPI->getOpcode() == Instruction::Store) &&
          "Must be called with either a load or store");
@@ -5867,17 +5866,8 @@ VPRecipeBase *VPRecipeBuilder::tryToWidenMemory(VPInstruction *VPI,
 
   if (VPI->getOpcode() == Instruction::Load) {
     auto *Load = cast<LoadInst>(I);
-    if (Plan.isPotentiallyFaultingLoad(Load)) {
-      auto *FFLoadR = new VPWidenFirstFaultingLoadRecipe(
-          *Load, Ptr, Mask, Consecutive, *VPI, Load->getDebugLoc());
-
-      if (Reverse) {
-        // The potentially faulting load set can only contain positive unit
-        // stride loads. Legality checks should discard vectorization otherwise.
-        llvm_unreachable("Potentially faulting load can only be Unit Stride");
-      }
-      return FFLoadR;
-    }
+    assert(!vputils::isFaultOnlyFirstLoad(VPI) &&
+           "Fault-only-first loads are widened in widenConsecutiveMemOps");
     auto *LoadR =
         Builder.createWidenLoad(*Load, Ptr, Mask, Consecutive, Load->getAlign(),
                                 *VPI, Load->getDebugLoc());
@@ -6329,6 +6319,24 @@ LoopVectorizationPlanner::tryToBuildVPlan1(LoopVectorizationCostModel &PlanCM) {
           "EarlyExitInScalarLoopCannotFoldTail", ORE, OrigLoop);
       return nullptr;
     }
+
+    // TODO: Support tail folding with fault-only-first loads.
+    bool HasFaultOnlyFirstMasks = any_of(
+        VPBlockUtils::blocksOnly<VPBasicBlock>(
+            vp_depth_first_shallow(VPlan0->getEntry())),
+        [](VPBasicBlock *VPBB) {
+          return any_of(*VPBB, [](VPRecipeBase &R) {
+            auto *VPI = dyn_cast<VPInstruction>(&R);
+            return VPI && VPI->getOpcode() == VPInstruction::FaultOnlyFirstMask;
+          });
+        });
+    if (HasFaultOnlyFirstMasks && PlanCM.foldTailByMasking() &&
+        !PlanCM.tryToDisableTailFolding()) {
+      reportVectorizationFailure(
+          "Cannot fold tail by masking with fault-only-first loads",
+          "FirstFaultingLoadCannotFoldTail", ORE, OrigLoop);
+      return nullptr;
+    }
   } else {
     RUN_VPLAN_PASS(VPlanTransforms::handleCountableEarlyExits, *VPlan0);
   }
@@ -6566,7 +6574,9 @@ LoopVectorizationPlanner::tryToBuildVPlan(VPlanPtr Plan, VFRange &Range,
   RUN_VPLAN_PASS(VPlanTransforms::optimizeInductionLiveOutUsers, *Plan, PSE,
                  OrigLoop);
 
-  RUN_VPLAN_PASS(VPlanTransforms::handleFirstFaultingLoadMasks, *Plan);
+  if (!RUN_VPLAN_PASS(VPlanTransforms::handleFirstFaultingLoads, *Plan,
+                      Range.Start.isScalar(), PlanCM.foldTailByMasking()))
+    return nullptr;
   // Apply mandatory transformation to handle reductions with multiple in-loop
   // uses if possible, bail out otherwise.
   if (!RUN_VPLAN_PASS(VPlanTransforms::handleMultiUseReductions, *Plan, ORE,

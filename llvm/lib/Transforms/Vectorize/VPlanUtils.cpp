@@ -884,6 +884,13 @@ VPInstruction *vputils::findComputeReductionResult(VPReductionPHIRecipe *PhiR) {
   return findSingleUser<VPInstruction::ComputeReductionResult>(SelR);
 }
 
+bool vputils::isFaultOnlyFirstLoad(const VPValue *V) {
+  return any_of(V->users(), [](const VPUser *U) {
+    return match(cast<VPRecipeBase>(U),
+                 m_VPInstruction<VPInstruction::FaultOnlyFirstMask>());
+  });
+}
+
 bool vputils::isUsedByLoadStoreAddress(const VPValue *V) {
   SmallPtrSet<const VPValue *, 4> Seen;
   SmallVector<const VPValue *> WorkList = {V};

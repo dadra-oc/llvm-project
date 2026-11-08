@@ -177,6 +177,10 @@ GEPNoWrapFlags getGEPFlagsForPtr(VPValue *Ptr);
 /// store.
 bool isUsedByLoadStoreAddress(const VPValue *V);
 
+/// Returns true if \p V is a load which may fault and must be widened to a
+/// fault-only-first load, i.e. it has a VPInstruction::FaultOnlyFirstMask user.
+bool isFaultOnlyFirstLoad(const VPValue *V);
+
 /// Find the ComputeReductionResult recipe for \p PhiR, looking through selects
 /// inserted for predicated reductions or tail folding.
 VPInstruction *findComputeReductionResult(VPReductionPHIRecipe *PhiR);

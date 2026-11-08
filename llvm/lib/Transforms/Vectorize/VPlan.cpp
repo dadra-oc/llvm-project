@@ -1246,9 +1246,6 @@ VPlan *VPlan::duplicate() {
   for (VPIRValue *OldLiveIn : getLiveIns())
     Old2NewVPValues[OldLiveIn] = NewPlan->getOrAddLiveIn(OldLiveIn);
 
-  for (LoadInst *L : getPotentiallyFaultingLoads())
-    NewPlan->addPotentiallyFaultingLoad(L);
-
   if (auto *TripCountIRV = dyn_cast_or_null<VPIRValue>(TripCount))
     Old2NewVPValues[TripCountIRV] = NewPlan->getOrAddLiveIn(TripCountIRV);
   // else NewTripCount will be created and inserted into Old2NewVPValues when

@@ -128,16 +128,9 @@ bool VPlanTransforms::tryToConvertVPInstructionsToVPRecipes(
         if (LoadInst *Load = dyn_cast<LoadInst>(Inst)) {
           bool IsConsecutive =
               IsConsecutiveAccess(VPI->getOperand(0), VPI->getScalarType());
-          if (Plan.isPotentiallyFaultingLoad(Load)) {
-            NewRecipe = new VPWidenFirstFaultingLoadRecipe(
-                *Load, Ingredient.getOperand(0), nullptr, IsConsecutive, *VPI,
-                Ingredient.getDebugLoc());
-          } else {
-            NewRecipe = new VPWidenLoadRecipe(
-                *Load, Ingredient.getOperand(0), nullptr /*Mask*/,
-                IsConsecutive, Load->getAlign(), *VPI,
-                Ingredient.getDebugLoc());
-          }
+          NewRecipe = new VPWidenLoadRecipe(
+              *Load, Ingredient.getOperand(0), nullptr /*Mask*/, IsConsecutive,
+              Load->getAlign(), *VPI, Ingredient.getDebugLoc());
         } else if (StoreInst *Store = dyn_cast<StoreInst>(Inst)) {
           bool IsConsecutive = IsConsecutiveAccess(
               VPI->getOperand(1), VPI->getOperand(0)->getScalarType());
@@ -3348,6 +3341,26 @@ struct EarlyExitInfo {
   VPValue *CondToExit;
 };
 
+void VPlanTransforms::addFaultOnlyFirstMasks(
+    VPlan &Plan, ArrayRef<VPInstruction *> FaultingLoads,
+    VPBasicBlock *&LatchVPBB) {
+  // Branch from each faulting load to the latch, so VPlanPredicator masks all
+  // recipes after it with the lanes it actually loaded. Split the latch first,
+  // so recipes in it are also masked.
+  LatchVPBB = LatchVPBB->splitAt(LatchVPBB->getTerminator()->getIterator());
+  for (VPInstruction *Load : FaultingLoads) {
+    VPBasicBlock *VPBB = Load->getParent();
+    VPBuilder Builder(std::next(Load->getIterator()));
+    VPValue *Mask =
+        Builder.createNaryOp(VPInstruction::FaultOnlyFirstMask, {Load},
+                             Load->getDebugLoc(), "ff.mask");
+    VPInstruction *Branch =
+        Builder.createNaryOp(VPInstruction::BranchOnCond, {Mask});
+    VPBB->splitAt(std::next(Branch->getIterator()));
+    VPBlockUtils::connectBlocks(VPBB, LatchVPBB);
+  }
+}
+
 /// Update \p Plan to mask memory operations in the loop based on whether the
 /// early exit is taken or not.
 ///
@@ -3439,9 +3452,8 @@ static bool handleUncountableExitsWithSideEffects(
   // for determining the uncountable exit for the maximum possible number of
   // scalar iterations of the loop.
   //
-  // It uses first-faulting loads in cases where we don't know whether
-  // all possible addresses are dereferenceable, which speculative
-  // unmasked loads are clipped dynamically by hardware faults.
+  // Otherwise, if allowed, the load is widened as a fault-only-first load.
+  bool IsFaultingLoad = false;
   {
     SmallVector<const SCEVPredicate *, 4> Predicates;
     const SCEV *PtrSCEV = vputils::getSCEVExprForVPValue(Ptr, PSE, TheLoop);
@@ -3452,10 +3464,8 @@ static bool handleUncountableExitsWithSideEffects(
             PtrSCEV, cast<LoadInst>(Load->getUnderlyingInstr())->getAlign(),
             PSE.getSE()->getConstant(EltSize), TheLoop, *PSE.getSE(), DT, AC,
             &Predicates)) {
-      // Tag this load so it is widened as first only fault
       if (AllowFirstFaultingLoads) {
-        auto *LI = cast<LoadInst>(Load->getUnderlyingInstr());
-        Plan.addPotentiallyFaultingLoad(LI);
+        IsFaultingLoad = true;
       } else {
         reportVectorizationFailure("Early exit loop with side effects contains "
                                    "load used by the exit condition that may "
@@ -3507,8 +3517,21 @@ static bool handleUncountableExitsWithSideEffects(
   // Create a mask to represent all lanes that fully execute in the vector loop,
   // stopping short of any early exit.
   VPBuilder MaskBuilder(InsertIt);
-  VPValue *Mask = MaskBuilder.createWidenIntrinsic(Intrinsic::mask_beforefirst,
-                                                   Cond, Cond->getScalarType());
+  VPValue *StopCond = Cond;
+  if (IsFaultingLoad) {
+    // The vector loop stops at the first lane that exits or faults. The latch
+    // only considers the loaded lanes for the exit.
+    VPValue *FFMask =
+        MaskBuilder.createNaryOp(VPInstruction::FaultOnlyFirstMask, {Load},
+                                 Load->getDebugLoc(), "ff.mask");
+    VPValue *LoadedCond = MaskBuilder.createLogicalAnd(FFMask, Cond);
+    StopCond = MaskBuilder.createLogicalOr(MaskBuilder.createNot(FFMask), Cond);
+    Cond->replaceUsesWithIf(LoadedCond, [&](VPUser *U) {
+      return cast<VPRecipeBase>(U)->getParent() != HeaderVPBB;
+    });
+  }
+  VPValue *Mask = MaskBuilder.createWidenIntrinsic(
+      Intrinsic::mask_beforefirst, StopCond, StopCond->getScalarType());
 
   // Convert all other memory operations to use the mask.
   for (VPBasicBlock *VPBB : vp_rpo_plain_cfg_loop_body(HeaderVPBB))
@@ -3535,7 +3558,7 @@ static bool handleUncountableExitsWithSideEffects(
   Type *IVScalarTy = IV->getScalarType();
   VPValue *Zero = Plan.getZero(IVScalarTy);
   VPValue *FirstActive = MiddleBuilder.createScalarZExtOrTrunc(
-      MiddleBuilder.createFirstActiveLane(Cond), IVScalarTy, DebugLoc());
+      MiddleBuilder.createFirstActiveLane(StopCond), IVScalarTy, DebugLoc());
   VPValue *ScalarIV = MiddleBuilder.createNaryOp(VPInstruction::ExtractLane,
                                                  {Zero, IV}, DebugLoc());
   VPValue *ExitIV = MiddleBuilder.createAdd(ScalarIV, FirstActive);
@@ -3610,9 +3633,11 @@ bool VPlanTransforms::handleUncountableEarlyExits(
           Style = UncountableExitStyle::MaskedHandleExitInScalarLoop;
   }
 
+  SmallVector<VPInstruction *> FaultingLoads;
   if (Style == UncountableExitStyle::MaskedHandleExitInVectorLoop &&
-      !areAllLoadsDereferenceable(Plan, HeaderVPBB, TheLoop, PSE, DT, AC,
-                                  AllowFirstFaultingLoads)) {
+      !areAllLoadsDereferenceable(HeaderVPBB, TheLoop, PSE, DT, AC,
+                                  AllowFirstFaultingLoads ? &FaultingLoads
+                                                          : nullptr)) {
     if (SideEffectVPBBs.empty()) {
       reportVectorizationFailure(
           "Auto-vectorization of early exit loops with potentially "
@@ -3621,6 +3646,44 @@ bool VPlanTransforms::handleUncountableEarlyExits(
       return false;
     }
     Style = UncountableExitStyle::MaskedHandleExitInScalarLoop;
+  }
+  // Predicate everything after each potentially faulting load on the lanes it
+  // actually loaded. Like side effects, faulting loads after an early exit must
+  // be masked with the lanes before the exit, so they must be dominated by it.
+  bool HasFaultingLoads =
+      Style == UncountableExitStyle::MaskedHandleExitInVectorLoop &&
+      !FaultingLoads.empty();
+  bool MaskAfterExits = !SideEffectVPBBs.empty();
+  if (HasFaultingLoads) {
+    for (auto [EarlyExitingVPBB, ExitBlock] :
+         vputils::getEarlyExits(Plan, MiddleVPBB)) {
+      SmallPtrSet<VPBlockBase *, 8> AfterExit;
+      SmallVector<VPBlockBase *> Worklist;
+      for (VPBlockBase *Succ : EarlyExitingVPBB->getSuccessors())
+        if (Succ != ExitBlock)
+          Worklist.push_back(Succ);
+      while (!Worklist.empty()) {
+        VPBlockBase *VPB = Worklist.pop_back_val();
+        if (isa<VPIRBasicBlock>(VPB) || !AfterExit.insert(VPB).second ||
+            VPB == LatchVPBB)
+          continue;
+        append_range(Worklist, VPB->getSuccessors());
+      }
+      for (VPInstruction *Load : FaultingLoads) {
+        if (!AfterExit.contains(Load->getParent()))
+          continue;
+        if (!VPDT.properlyDominates(EarlyExitingVPBB, Load->getParent())) {
+          reportVectorizationFailure(
+              "Early exit loop contains a potentially faulting load that may "
+              "execute after an exit it is not dominated by",
+              "EarlyExitConditionalFaultingLoad", ORE, TheLoop);
+          return false;
+        }
+        MaskAfterExits = true;
+      }
+    }
+    addFaultOnlyFirstMasks(Plan, FaultingLoads, LatchVPBB);
+    VPDT.recalculate(Plan);
   }
 
   VPBuilder LatchBuilder(LatchVPBB->getTerminator());
@@ -3682,13 +3745,18 @@ bool VPlanTransforms::handleUncountableEarlyExits(
       Term->setOperand(0, VPBuilder(Term).createFreeze(Term->getOperand(0)));
     }
 
-    if (!SideEffectVPBBs.empty()) {
-      // Split the latch in case it has recipes with side effects.
-      LatchVPBB = LatchVPBB->splitAt(LatchVPBB->getTerminator()->getIterator());
+    if (!SideEffectVPBBs.empty() || HasFaultingLoads) {
+      // Split the latch in case it has recipes with side effects. It was
+      // already split when branching from fault-only-first loads.
+      if (!HasFaultingLoads)
+        LatchVPBB =
+            LatchVPBB->splitAt(LatchVPBB->getTerminator()->getIterator());
       LatchBuilder.setInsertPoint(LatchVPBB->getTerminator());
 
       // Branch to the latch to skip any side effects past the exiting lane.
-      for (EarlyExitInfo &Exit : Exits) {
+      for (EarlyExitInfo &Exit : MaskAfterExits
+                                     ? MutableArrayRef<EarlyExitInfo>(Exits)
+                                     : MutableArrayRef<EarlyExitInfo>()) {
         VPBasicBlock *EarlyExitingVPBB = Exit.EarlyExitingVPBB;
         VPBuilder ExitingBuilder(EarlyExitingVPBB->getTerminator());
         VPValue *ExitMask = ExitingBuilder.createWidenIntrinsic(
@@ -6179,6 +6247,20 @@ void VPlanTransforms::makeMemOpWideningDecisions(VPlan &Plan, VFRange &Range,
           return false;
         bool Reverse = Stride == -1;
 
+        // A fault-only-first load may still fault on its first lane if it is
+        // masked on, so it must only be masked on if the scalar loop also
+        // accesses it.
+        if (IsLoad && vputils::isFaultOnlyFirstLoad(VPI)) {
+          assert(!Reverse && "Only forward consecutive loads may fault");
+          VPBuilder Builder(VPI);
+          VPSingleDefRecipe *VectorPtr = Builder.createConsecutiveVectorPointer(
+              Ptr, ScalarTy, /*Reverse=*/false, VPI->getDebugLoc());
+          return ReplaceWith(VPI, Builder.createWidenFirstFaultingLoad(
+                                      *cast<LoadInst>(I), VectorPtr,
+                                      VPI->getMask(), /*Consecutive=*/true,
+                                      *VPI, VPI->getDebugLoc()));
+        }
+
         // A predicated access can only be widened (rather than scalarized) if
         // the target supports a masked load/store for it.
         // TODO: Determine if a load/store needs predication directly in VPlan.
@@ -6200,16 +6282,8 @@ void VPlanTransforms::makeMemOpWideningDecisions(VPlan &Plan, VFRange &Range,
                                       VPI->getDebugLoc());
 
         if (IsLoad) {
-          auto *LI = cast<LoadInst>(I);
-          if (Plan.isPotentiallyFaultingLoad(LI)) {
-            auto *FFLoad = Builder.createWidenFirstFaultingLoad(
-                *LI, VectorPtr,
-                /*Mask=*/nullptr,
-                /*Consecutive=*/true, *VPI, VPI->getDebugLoc());
-            return ReplaceWith(VPI, FFLoad);
-          }
           VPSingleDefRecipe *Load = Builder.createWidenLoad(
-              *LI, VectorPtr, Mask,
+              *cast<LoadInst>(I), VectorPtr, Mask,
               /*Consecutive=*/true, Alignment, *VPI, VPI->getDebugLoc());
           // Reverse the loaded values back into program order.
           if (Reverse)
@@ -6230,15 +6304,14 @@ void VPlanTransforms::makeMemOpWideningDecisions(VPlan &Plan, VFRange &Range,
         return ReplaceWith(VPI, StoreR);
       });
 
-  VPlanTransforms::runPass(
-      "delegateMemOpWideningToLegacyCM", ProcessSubset, Plan,
-      [&](VPInstruction *VPI) {
-        if (VPRecipeBase *Recipe =
-                RecipeBuilder.tryToWidenMemory(VPI, Range, Plan))
-          return ReplaceWith(VPI, Recipe);
+  VPlanTransforms::runPass("delegateMemOpWideningToLegacyCM", ProcessSubset,
+                           Plan, [&](VPInstruction *VPI) {
+                             if (VPRecipeBase *Recipe =
+                                     RecipeBuilder.tryToWidenMemory(VPI, Range))
+                               return ReplaceWith(VPI, Recipe);
 
-        return Scalarize(VPI);
-      });
+                             return Scalarize(VPI);
+                           });
 }
 
 void VPlanTransforms::makeScalarizationDecisions(VPlan &Plan, VFRange &Range) {
@@ -6741,95 +6814,97 @@ bool VPlanTransforms::widenCompressingPatterns(VPlan &Plan,
   return true;
 }
 
-void VPlanTransforms::handleFirstFaultingLoadMasks(VPlan &Plan) {
-  // TODO: Current implementation only supports masking for handling active
-  // lanes on a ff-load. This could be completed providing support for EVL
-  // avoiding masks on those cases just wiring properly the active lanes count.
+/// Create the number of lanes loaded by \p FFLoad as \p Ty after it, and
+/// update \p Step, the number of lanes processed by an iteration of the vector
+/// loop, to the minimum of it and the previous \p Step.
+static VPValue *addFirstFaultingCount(VPWidenFirstFaultingLoadRecipe *FFLoad,
+                                      Type *Ty, VPValue *&Step) {
+  VPBuilder Builder = VPBuilder::getToInsertAfter(FFLoad);
+  VPValue *Count = Builder.createScalarZExtOrTrunc(FFLoad->getCount(), Ty,
+                                                   FFLoad->getDebugLoc());
+  Step = Step ? Builder.createSelect(
+                    Builder.createICmp(CmpInst::ICMP_ULT, Count, Step), Count,
+                    Step)
+              : Count;
+  return Count;
+}
+
+bool VPlanTransforms::handleFirstFaultingLoads(VPlan &Plan, bool IsScalarVF,
+                                               bool FoldTail) {
   VPRegionBlock *LoopRegion = Plan.getVectorLoopRegion();
   if (!LoopRegion)
-    return;
-  VPValue *PreviousMask = nullptr;
+    return true;
+  Type *CanIVTy = LoopRegion->getCanonicalIVType();
+  VPValue *Zero = Plan.getZero(CanIVTy);
+
+  // The loop steps by the minimum of the loaded lanes of all fault-only-first
+  // loads. Lower each FaultOnlyFirstMask to an active lane mask over the lanes
+  // its fault-only-first load actually loaded. VPlanPredicator already applied
+  // it to everything that depends on the load. A block is visited before the
+  // blocks it dominates, so each load is visited before its masks and the loads
+  // it dominates.
   VPValue *Step = nullptr;
-
-  VPBlockBase *Entry = LoopRegion->getEntry();
-  // Walk vector body blocks and insert / compose FF masks.
-  for (VPBasicBlock *BB :
-       VPBlockUtils::blocksOnly<VPBasicBlock>(vp_depth_first_shallow(Entry))) {
-
-    for (VPRecipeBase &R : *BB) {
-      auto Mask = PreviousMask;
-      if (PreviousMask) {
-        // Lanes at or past the ff-load count are poison. Mask exit conditions
-        // with the ff mask first (select-based logical-and) so poison cannot
-        // reach AnyOf/FirstActiveLane.
-        VPValue *Cond;
-        // any-of(freeze(cond)) -> any-of(freeze(logical-and(ff.mask, cond))).
-        // The vector.early.exit FirstActiveLane reuses the same freeze.
-        if (match(&R, m_AnyOf(m_Freeze(m_VPValue(Cond))))) {
-          auto *Freeze = cast<VPInstruction>(R.getOperand(0));
-          VPBuilder B(Freeze);
-          Freeze->setOperand(0, B.createLogicalAnd(PreviousMask, Cond,
-                                                   Freeze->getDebugLoc(),
-                                                   "ff.exit.cond"));
-        } else if (match(&R, m_FirstActiveLane(m_VPValue(Cond)))) {
-          // Loops with side effects: FirstActiveLane(cond) feeding
-          // uncountable.exit.mask.
-          VPBuilder B(&R);
-          R.setOperand(0,
-                       B.createLogicalAnd(PreviousMask, Cond, R.getDebugLoc()));
-        }
-        if (auto *MemR = dyn_cast<VPWidenMemoryRecipe>(&R)) {
-          if (VPValue *OldMask = MemR->getMask()) {
-            VPBuilder B(&R);
-            Mask = B.createLogicalAnd(PreviousMask, OldMask, R.getDebugLoc(),
-                                      "ff.mask.merge");
-          }
-          MemR->updateMask(Mask);
-        }
-      }
-
-      // If the current recipe is a First-Faulting Load, we need to generate
-      // the mask based on the first faulting lane.
+  DenseMap<VPRecipeBase *, VPValue *> LoadedCounts;
+  SmallVector<VPInstruction *> AnyOfs;
+  for (VPBasicBlock *VPBB : VPBlockUtils::blocksOnly<VPBasicBlock>(
+           vp_depth_first_deep(LoopRegion->getEntry()))) {
+    for (VPRecipeBase &R : make_early_inc_range(*VPBB)) {
       if (auto *FFLoad = dyn_cast<VPWidenFirstFaultingLoadRecipe>(&R)) {
-        VPBuilder Builder = VPBuilder::getToInsertAfter(&R);
-        VPValue *FaultIndex = FFLoad->getCount();
-        Type *FaultIdxTy = FaultIndex->getScalarType();
-        Type *IVTy = LoopRegion->getCanonicalIVType();
-        if (FaultIdxTy != IVTy) {
-          FaultIndex = Builder.createScalarZExtOrTrunc(FaultIndex, IVTy,
-                                                       FFLoad->getDebugLoc());
-        }
-
-        if (!Step) {
-          Step = FaultIndex;
-        } else {
-          VPValue *Cmp =
-              Builder.createICmp(CmpInst::ICMP_ULT, FaultIndex, Step);
-          Step = Builder.createSelect(Cmp, FaultIndex, Step);
-        }
-
-        VPValue *Zero =
-            Plan.getConstantInt(LoopRegion->getCanonicalIVType(), 0);
-        auto *MaskR =
-            Builder.createNaryOp(VPInstruction::ActiveLaneMask, {Zero, Step},
-                                 FFLoad->getDebugLoc(), "ff.mask");
-        PreviousMask = MaskR->getVPValue(0);
+        LoadedCounts[FFLoad] = addFirstFaultingCount(FFLoad, CanIVTy, Step);
+        continue;
       }
+      if (match(&R, m_AnyOf(m_VPValue()))) {
+        AnyOfs.push_back(cast<VPInstruction>(&R));
+        continue;
+      }
+      if (!match(&R, m_VPInstruction<VPInstruction::FaultOnlyFirstMask>()))
+        continue;
+      auto *FFMask = cast<VPInstruction>(&R);
+      VPValue *Count =
+          LoadedCounts.lookup(FFMask->getOperand(0)->getDefiningRecipe());
+      if (!Count) {
+        // The load was not widened. For the scalar VF it executes like in the
+        // scalar loop, so all its lanes are loaded. Otherwise, scalarizing it
+        // would speculatively access lanes the scalar loop may not access.
+        if (!IsScalarVF)
+          return false;
+        FFMask->replaceAllUsesWith(Plan.getTrue());
+        FFMask->eraseFromParent();
+        continue;
+      }
+      FFMask->replaceAllUsesWith(VPBuilder(FFMask).createNaryOp(
+          VPInstruction::ActiveLaneMask, {Zero, Count}, FFMask->getDebugLoc()));
+      FFMask->eraseFromParent();
     }
   }
   if (!Step)
-    return;
+    return true;
+
+  // Only take an early exit on lanes loaded by all fault-only-first loads.
+  VPValue *StepMask =
+      VPBuilder::getToInsertAfter(Step->getDefiningRecipe())
+          .createNaryOp(VPInstruction::ActiveLaneMask, {Zero, Step},
+                        DebugLoc::getUnknown(), "ff.processed.mask");
+  for (VPInstruction *AnyOf : AnyOfs) {
+    VPValue *ExitConds = AnyOf->getOperand(0);
+    auto *Processed = cast<VPInstruction>(VPBuilder(AnyOf).createLogicalAnd(
+        StepMask, ExitConds, AnyOf->getDebugLoc()));
+    ExitConds->replaceUsesWithIf(
+        Processed, [Processed](VPUser *U) { return U != Processed; });
+  }
+
+  assert(!FoldTail &&
+         "Tail folding is disabled for loops with fault-only-first loads");
 
   // Since lanes after a fault are not loaded, the stepping should be updated
-  // accordingly to only stepping by valid lanes. Reuses variable-lenght step
+  // accordingly to only step by valid lanes. Reuses the variable-length step
   // used for EVL tail folding.
   VPBasicBlock *Header = LoopRegion->getEntryBasicBlock();
   VPRegionValue *CanonicalIV = LoopRegion->getCanonicalIV();
-  Type *CanIVTy = LoopRegion->getCanonicalIVType();
   VPInstruction *CanIVInc = LoopRegion->getOrCreateCanonicalIVIncrement();
 
-  auto *CurrentIteration = new VPCurrentIterationPHIRecipe(
-      Plan.getZero(CanIVTy), DebugLoc::getUnknown());
+  auto *CurrentIteration =
+      new VPCurrentIterationPHIRecipe(Zero, DebugLoc::getUnknown());
   CurrentIteration->insertBefore(Header->begin());
   VPBuilder Builder(CanIVInc);
   VPValue *NextIter =
@@ -6837,22 +6912,17 @@ void VPlanTransforms::handleFirstFaultingLoadMasks(VPlan &Plan) {
                         "current.iteration.next", CanIVInc->getNoWrapFlags());
   CurrentIteration->addBackedgeValue(NextIter);
 
-  // Inductions widened by the vectorizer must also step by the number of
-  // valid lanes.
-  Plan.getVF().replaceUsesWithIf(Step, [](VPUser *U) {
-    return isa<VPWidenIntOrFpInductionRecipe>(U);
-  });
-  Plan.getVFxUF().replaceUsesWithIf(Step, [](VPUser *U) {
-    return isa<VPWidenPointerInductionRecipe>(U);
-  });
+  // Inductions widened by the vectorizer must also step by the loaded lanes.
+  Plan.getVF().replaceUsesWithIf(
+      Step, [](VPUser *U) { return isa<VPWidenIntOrFpInductionRecipe>(U); });
+  Plan.getVFxUF().replaceUsesWithIf(
+      Step, [](VPUser *U) { return isa<VPWidenPointerInductionRecipe>(U); });
 
   CanonicalIV->replaceUsesWithIf(
-      CurrentIteration,
-      [CanIVInc](VPUser *U) { return U != CanIVInc; });
+      CurrentIteration, [CanIVInc](VPUser *U) { return U != CanIVInc; });
 
-  // Modify exiting condition. Since fault may occur and less than VF
-  // elements can be processed, it is required to check if there are still
-  // enough elements for vector loop to process VF.
+  // The vector loop may process fewer than VF lanes in any iteration, so it
+  // can only run another iteration if VF lanes still fit in the trip count.
   auto *Latch = LoopRegion->getExitingBasicBlock();
   auto *LatchTerm = cast<VPInstruction>(Latch->getTerminator());
   assert(LatchTerm->getOpcode() == VPInstruction::BranchOnTwoConds &&
@@ -6863,51 +6933,33 @@ void VPlanTransforms::handleFirstFaultingLoadMasks(VPlan &Plan) {
       Builder.createICmp(CmpInst::ICMP_ULT, NextPlusVF, Plan.getTripCount());
   LatchTerm->setOperand(1, Builder.createNot(CanDoVF));
 
-  // On loops with side effects, the middle block resumes at IV + FirstActive.
-  // The vector loop only executed lanes below both the first active lane and
-  // the ff-load count, so resume at the minimum of the two.
-  VPValue *MiddleCond;
-  if (match(Plan.getMiddleBlock()->getTerminator(),
-            m_BranchOnCond(m_VPValue(MiddleCond))))
-    if (auto *MiddleCmp =
-            dyn_cast_or_null<VPInstruction>(MiddleCond->getDefiningRecipe())) {
-      for (VPValue *Op : MiddleCmp->operands()) {
-        VPValue *ScalarIV, *FirstActiveLane;
-        if (!match(Op, m_Add(m_VPValue(ScalarIV), m_VPValue(FirstActiveLane))))
-          continue;
-        auto *ExitIV = cast<VPInstruction>(Op);
-        VPBuilder B(ExitIV);
-        VPValue *Count = B.createScalarZExtOrTrunc(
-            Step, ScalarIV->getScalarType(), ExitIV->getDebugLoc());
-        VPValue *IsFault = B.createICmp(CmpInst::ICMP_ULT, Count,
-                                        FirstActiveLane, ExitIV->getDebugLoc());
-        ExitIV->setOperand(1, B.createSelect(IsFault, Count, FirstActiveLane,
-                                             ExitIV->getDebugLoc()));
-      }
-    }
-
-  // Since vector loop may have run less scalar iterations due to a fault,
-  // it may not have run vector trip count iterations. Son we need to update
-  // the iteration at it actually finished.
+  // Since the vector loop may have run fewer scalar iterations due to a fault,
+  // it may not have run vector trip count iterations, so we need to update the
+  // iteration at which it actually finished.
   VPBasicBlock *MiddleVPBB = Plan.getMiddleBlock();
-  VPBlockBase *VectorPH = LoopRegion->getSinglePredecessor();
-  for (VPUser *U : to_vector(Plan.getVectorTripCount().users())) {
-    auto *R = cast<VPRecipeBase>(U);
-    if (R->getRegion() == LoopRegion)
+  auto *VectorPH = cast<VPBasicBlock>(LoopRegion->getSinglePredecessor());
+  SmallPtrSet<VPValue *, 8> DependsOnVTC = {&Plan.getVectorTripCount()};
+  SmallVector<VPRecipeBase *> ToSink;
+  for (VPRecipeBase &R : *VectorPH) {
+    if (none_of(R.operands(),
+                [&](VPValue *Op) { return DependsOnVTC.contains(Op); }))
       continue;
-    if (R->getParent() != VectorPH) {
-      R->replaceUsesOfWith(&Plan.getVectorTripCount(), NextIter);
-      continue;
+    // Values used in the loop can't depend on where the loop stops.
+    for (VPValue *Def : R.definedValues()) {
+      if (any_of(Def->users(), [LoopRegion](VPUser *U) {
+            return cast<VPRecipeBase>(U)->getRegion() == LoopRegion;
+          }))
+        return false;
+      DependsOnVTC.insert(Def);
     }
-    auto *Def = cast<VPSingleDefRecipe>(R);
-    assert(none_of(Def->users(),
-                   [LoopRegion](VPUser *U) {
-                     return cast<VPRecipeBase>(U)->getRegion() == LoopRegion;
-                   }) &&
-           "end value used inside the vector loop");
-    VPSingleDefRecipe *NewDef = Def->clone();
-    NewDef->insertBefore(MiddleVPBB->getFirstNonPhi());
-    NewDef->replaceUsesOfWith(&Plan.getVectorTripCount(), NextIter);
-    Def->replaceAllUsesWith(NewDef);
+    ToSink.push_back(&R);
   }
+  auto InsertPt = MiddleVPBB->getFirstNonPhi();
+  for (VPRecipeBase *R : ToSink)
+    R->moveBefore(InsertPt);
+  Plan.getVectorTripCount().replaceUsesWithIf(
+      NextIter, [LoopRegion](VPUser *U) {
+        return cast<VPRecipeBase>(U)->getRegion() != LoopRegion;
+      });
+  return true;
 }

@@ -392,12 +392,23 @@ struct VPlanTransforms {
 
   /// Check if all loads in the loop are dereferenceable. Iterates over the
   /// loop body blocks reachable from \p HeaderVPBB. Returns false if any
-  /// non-dereferenceable load is found.
-  static bool areAllLoadsDereferenceable(VPlan &Plan, VPBasicBlock *HeaderVPBB,
-                                         Loop *TheLoop,
-                                         PredicatedScalarEvolution &PSE,
-                                         DominatorTree &DT, AssumptionCache *AC,
-                                         bool AllowFirstFaultingLoads);
+  /// non-dereferenceable load is found, unless \p FaultingLoads is provided, in
+  /// which case forward unit-stride ones are collected there to be widened as
+  /// fault-only-first loads.
+  static bool
+  areAllLoadsDereferenceable(VPBasicBlock *HeaderVPBB, Loop *TheLoop,
+                             PredicatedScalarEvolution &PSE, DominatorTree &DT,
+                             AssumptionCache *AC,
+                             SmallVectorImpl<VPInstruction *> *FaultingLoads);
+
+  /// For each potentially faulting load in \p FaultingLoads (ReadOnly early
+  /// exit loops only), add a VPInstruction::FaultOnlyFirstMask after it and
+  /// branch on it to \p LatchVPBB, so VPlanPredicator masks everything that
+  /// depends on the load with the lanes it actually loaded. The latch is split
+  /// at the IV increment first, and \p LatchVPBB is updated accordingly.
+  static void addFaultOnlyFirstMasks(VPlan &Plan,
+                                     ArrayRef<VPInstruction *> FaultingLoads,
+                                     VPBasicBlock *&LatchVPBB);
 
   /// If a single exit has multiple conditions combined together, split them
   /// and create new exiting blocks. Currently limited to a single exit in the
@@ -410,12 +421,12 @@ struct VPlanTransforms {
   /// latch exit condition. Multiple exits are handled with a dispatch block
   /// that determines which exit to take based on lane-by-lane semantics.
   /// \p Style is the preferred style, and is updated to the style used.
-  LLVM_ABI_FOR_TEST static bool
-  handleUncountableEarlyExits(VPlan &Plan, OptimizationRemarkEmitter *ORE,
-                              Loop *TheLoop, PredicatedScalarEvolution &PSE,
-                              DominatorTree &DT, AssumptionCache *AC,
-                              UncountableExitStyle &Style,
-                              bool AllowFirstFaultingLoads);
+  /// Potentially faulting loads are widened to fault-only-first loads if
+  /// \p AllowFirstFaultingLoads.
+  LLVM_ABI_FOR_TEST static bool handleUncountableEarlyExits(
+      VPlan &Plan, OptimizationRemarkEmitter *ORE, Loop *TheLoop,
+      PredicatedScalarEvolution &PSE, DominatorTree &DT, AssumptionCache *AC,
+      UncountableExitStyle &Style, bool AllowFirstFaultingLoads = false);
 
   /// Disconnect countable early exits from the loop.
   LLVM_ABI_FOR_TEST static void handleCountableEarlyExits(VPlan &Plan);
@@ -669,11 +680,11 @@ struct VPlanTransforms {
                                        const TargetTransformInfo &TTI,
                                        PredicatedScalarEvolution &PSE);
 
-  /// Transforms the VPlan containing first faulting loads to introduce
-  /// the necessary masks depending on ff-load active lanes, and to step the
-  /// vector loop by the number of loaded lanes using a
-  /// VPCurrentIterationPHIRecipe.
-  static void handleFirstFaultingLoadMasks(VPlan &Plan);
+  /// Lower the fault-only-first masks to the lanes actually loaded, and step
+  /// the vector loop by the number of loaded lanes. Returns false if \p Plan
+  /// cannot be vectorized with fault-only-first loads.
+  static bool handleFirstFaultingLoads(VPlan &Plan, bool IsScalarVF,
+                                       bool FoldTail);
 };
 
 } // namespace llvm

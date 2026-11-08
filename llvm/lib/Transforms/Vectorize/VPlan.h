@@ -1442,6 +1442,9 @@ public:
     /// is the value of the last lane of the induction increment (i.e. its
     /// backedge value). Has the wide induction recipe as operand.
     ExitingIVValue,
+    /// Mask of the lanes loaded by a fault-only-first load. Its operand is a
+    /// potentially faulting load.
+    FaultOnlyFirstMask,
     MaskedCond,
     /// Scale the first operand (vector step) by the second operand
     /// (scalar-step).  Casts both operands to the result type if needed.
@@ -3905,23 +3908,6 @@ public:
     return isMasked() ? R->getLastOperand() : nullptr;
   }
 
-  // Updates exiting mask with a new one.
-  void updateMask(VPValue *NewMask) {
-    if (!NewMask)
-      return;
-    assert(NewMask->getScalarType()->isIntegerTy(1) &&
-           "Mask must be an i1 (vector)");
-    VPRecipeBase *R = getAsRecipe();
-    if (!IsMasked) {
-      // If no previous mask, just set it
-      R->addOperand(NewMask);
-    } else {
-      // Replace the mask operand
-      R->setOperand(R->getNumOperands() - 1, NewMask);
-    }
-    IsMasked = true;
-  }
-
   /// Returns the alignment of the memory access.
   Align getAlign() const { return Alignment; }
 
@@ -5089,10 +5075,6 @@ class VPlan {
   /// VPlan is destroyed.
   SmallVector<VPBlockBase *> CreatedBlocks;
 
-  /// Set of Loads that would require to be widened to first-only-fault loads
-  /// since they are potentially faulting
-  SmallPtrSet<LoadInst *, 4> PotentiallyFaultingLoads;
-
   /// Construct a VPlan with \p Entry to the plan and with \p ScalarHeader
   /// wrapping the original header of the scalar loop. The vector loop will have
   /// index type \p IdxTy.
@@ -5236,17 +5218,6 @@ public:
 
   /// Returns VF * UF of the vector loop region.
   VPSymbolicValue &getVFxUF() { return VFxUF; }
-
-  // Add a Load into potentially faulting load set
-  void addPotentiallyFaultingLoad(LoadInst *L) {
-    PotentiallyFaultingLoads.insert(L);
-  }
-
-  bool isPotentiallyFaultingLoad(LoadInst *L) const {
-    return PotentiallyFaultingLoads.contains(L);
-  }
-
-  auto getPotentiallyFaultingLoads() const { return PotentiallyFaultingLoads; }
 
   LLVMContext &getContext() const {
     return getScalarHeader()->getIRBasicBlock()->getContext();

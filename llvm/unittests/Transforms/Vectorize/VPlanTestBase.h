@@ -108,9 +108,8 @@ protected:
     }
 
     if (Style) {
-      VPlanTransforms::handleUncountableEarlyExits(
-          *Plan, &ORE, L, PSE, *DT, AC.get(), *Style,
-          /*AllowFirstFaultingLoads=*/false);
+      VPlanTransforms::handleUncountableEarlyExits(*Plan, &ORE, L, PSE, *DT,
+                                                   AC.get(), *Style);
     } else
       VPlanTransforms::handleCountableEarlyExits(*Plan);
     VPlanTransforms::addMiddleCheck(*Plan);
