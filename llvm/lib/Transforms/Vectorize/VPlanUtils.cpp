@@ -486,6 +486,10 @@ bool vputils::isSingleScalar(const VPValue *VPV) {
     return RV == RV->getDefiningRegion()->getCanonicalIV();
   if (isa<VPIRValue, VPSymbolicValue>(VPV))
     return true;
+  // The fault count produced by a first-faulting load is a scalar.
+  if (auto *FF = dyn_cast_or_null<VPWidenFirstFaultingLoadRecipe>(
+          VPV->getDefiningRecipe()))
+    return VPV == FF->getCount();
 
   if (auto *Rep = dyn_cast<VPReplicateRecipe>(VPV)) {
     const VPRegionBlock *RegionOfR = Rep->getRegion();
