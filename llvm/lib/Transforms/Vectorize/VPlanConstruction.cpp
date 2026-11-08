@@ -1296,6 +1296,13 @@ bool VPlanTransforms::areAllLoadsDereferenceable(
                                              SizeSCEV, TheLoop, SE, DT, AC,
                                              &Preds)) {
         if (FaultingLoads) {
+          // Only forward unit-stride loads can be widened to fault-only-first
+          // loads.
+          if (vputils::getConstantStride(Ptr, LoadTy, PSE, TheLoop) != 1) {
+            LLVM_DEBUG(dbgs() << "LV: Not vectorizing: Potentially faulting "
+                                 "load is not a forward unit-stride access.\n");
+            return false;
+          }
           LLVM_DEBUG(dbgs() << "LV: Load may fault. Using first-fault load.\n");
           FaultingLoads->push_back(VPI);
         } else {
