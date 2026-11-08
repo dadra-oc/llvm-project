@@ -1859,7 +1859,7 @@ bool LoopVectorizationLegality::isVectorizableEarlyExitLoop() {
   } else {
     // Check all uncountable exiting blocks for movable loads.
     for (BasicBlock *ExitingBB : UncountableExitingBlocks) {
-      if (!canUncountableExitConditionLoadBeMoved(ExitingBB))
+      if (!canUncountableExitConditionLoadBeMoved(ExitingBB, NonDerefLoads))
         return false;
     }
   }
@@ -1900,7 +1900,7 @@ bool LoopVectorizationLegality::isVectorizableEarlyExitLoop() {
 }
 
 bool LoopVectorizationLegality::canUncountableExitConditionLoadBeMoved(
-    BasicBlock *ExitingBlock) {
+    BasicBlock *ExitingBlock, SmallVectorImpl<LoadInst *> &NonDerefLoads) {
   // Try to find a load in the critical path for the uncountable exit condition.
   // This is currently matching about the simplest form we can, expecting
   // only one in-loop load, the result of which is directly compared against
@@ -1955,6 +1955,10 @@ bool LoopVectorizationLegality::canUncountableExitConditionLoadBeMoved(
         "ConditionalUncountableExitLoad", ORE, TheLoop);
     return false;
   }
+
+  // A condition load that may fault is widened as a first-faulting load.
+  if (!isDereferenceableAndAlignedInLoop(Load, TheLoop, *PSE.getSE(), *DT, AC))
+    NonDerefLoads.push_back(Load);
 
   // Prohibit any potential aliasing with any instruction in the loop which
   // might store to memory.
