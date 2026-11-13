@@ -743,62 +743,38 @@ define void @loop_contains_store_in_latch_block(ptr dereferenceable(40) noalias 
 ;
 ; FF-LABEL: define void @loop_contains_store_in_latch_block(
 ; FF-SAME: ptr noalias dereferenceable(40) [[ARRAY:%.*]], ptr readonly align 2 dereferenceable(40) [[PRED:%.*]]) #[[ATTR0]] {
-; FF-NEXT:  [[ENTRY:.*]]:
-; FF-NEXT:    [[TMP0:%.*]] = call i64 @llvm.vscale.i64()
-; FF-NEXT:    [[TMP1:%.*]] = shl nuw i64 [[TMP0]], 3
-; FF-NEXT:    [[MIN_ITERS_CHECK:%.*]] = icmp ult i64 20, [[TMP1]]
-; FF-NEXT:    br i1 [[MIN_ITERS_CHECK]], label %[[SCALAR_PH:.*]], label %[[VECTOR_PH:.*]]
+; FF-NEXT:  [[ENTRY:.*:]]
+; FF-NEXT:    br label %[[VECTOR_PH:.*]]
 ; FF:       [[VECTOR_PH]]:
 ; FF-NEXT:    br label %[[FOR_BODY:.*]]
 ; FF:       [[FOR_BODY]]:
 ; FF-NEXT:    [[IV:%.*]] = phi i64 [ 0, %[[VECTOR_PH]] ], [ [[CURRENT_ITERATION_NEXT:%.*]], %[[VECTOR_BODY_INTERIM:.*]] ]
+; FF-NEXT:    [[AVL:%.*]] = phi i64 [ 20, %[[VECTOR_PH]] ], [ [[AVL_NEXT:%.*]], %[[VECTOR_BODY_INTERIM]] ]
+; FF-NEXT:    [[TMP0:%.*]] = call i32 @llvm.experimental.get.vector.length.i64(i64 [[AVL]], i32 8, i1 true)
 ; FF-NEXT:    [[EE_ADDR:%.*]] = getelementptr inbounds nuw i16, ptr [[PRED]], i64 [[IV]]
-; FF-NEXT:    [[WIDE_LOAD:%.*]] = load <vscale x 8 x i16>, ptr [[EE_ADDR]], align 2
+; FF-NEXT:    [[WIDE_LOAD:%.*]] = call <vscale x 8 x i16> @llvm.vp.load.nxv8i16.p0(ptr align 2 [[EE_ADDR]], <vscale x 8 x i1> splat (i1 true), i32 [[TMP0]])
 ; FF-NEXT:    [[TMP3:%.*]] = icmp sgt <vscale x 8 x i16> [[WIDE_LOAD]], splat (i16 500)
-; FF-NEXT:    [[TMP4:%.*]] = freeze <vscale x 8 x i1> [[TMP3]]
+; FF-NEXT:    [[TMP7:%.*]] = call <vscale x 8 x i1> @llvm.vp.merge.nxv8i1(<vscale x 8 x i1> splat (i1 true), <vscale x 8 x i1> [[TMP3]], <vscale x 8 x i1> zeroinitializer, i32 [[TMP0]])
+; FF-NEXT:    [[TMP4:%.*]] = freeze <vscale x 8 x i1> [[TMP7]]
 ; FF-NEXT:    [[TMP5:%.*]] = call <vscale x 8 x i1> @llvm.mask.beforefirst.nxv8i1(<vscale x 8 x i1> [[TMP4]])
 ; FF-NEXT:    [[TMP6:%.*]] = getelementptr i16, ptr [[ARRAY]], i64 [[IV]]
-; FF-NEXT:    [[TMP7:%.*]] = call i32 @llvm.vscale.i32()
-; FF-NEXT:    [[TMP8:%.*]] = mul nuw i32 [[TMP7]], 8
-; FF-NEXT:    [[WIDE_LOAD_FF:%.*]] = call { <vscale x 8 x i16>, i32 } @llvm.vp.load.ff.nxv8i16.p0(ptr align 2 [[TMP6]], <vscale x 8 x i1> [[TMP5]], i32 [[TMP8]])
-; FF-NEXT:    [[WIDE_LOAD_FF_VAL:%.*]] = extractvalue { <vscale x 8 x i16>, i32 } [[WIDE_LOAD_FF]], 0
-; FF-NEXT:    [[WIDE_LOAD_FF_COUNT:%.*]] = extractvalue { <vscale x 8 x i16>, i32 } [[WIDE_LOAD_FF]], 1
-; FF-NEXT:    [[TMP9:%.*]] = zext i32 [[WIDE_LOAD_FF_COUNT]] to i64
-; FF-NEXT:    [[FF_PROCESSED_MASK:%.*]] = call <vscale x 8 x i1> @llvm.get.active.lane.mask.nxv8i1.i64(i64 0, i64 [[TMP9]])
-; FF-NEXT:    [[TMP10:%.*]] = freeze <vscale x 8 x i1> [[FF_PROCESSED_MASK]]
-; FF-NEXT:    [[TMP11:%.*]] = select <vscale x 8 x i1> [[TMP5]], <vscale x 8 x i1> [[TMP10]], <vscale x 8 x i1> zeroinitializer
+; FF-NEXT:    [[WIDE_LOAD_FF_VAL:%.*]] = call <vscale x 8 x i16> @llvm.vp.load.nxv8i16.p0(ptr align 2 [[TMP6]], <vscale x 8 x i1> [[TMP5]], i32 [[TMP0]])
 ; FF-NEXT:    [[TMP12:%.*]] = add nsw <vscale x 8 x i16> [[WIDE_LOAD_FF_VAL]], splat (i16 1)
-; FF-NEXT:    call void @llvm.masked.store.nxv8i16.p0(<vscale x 8 x i16> [[TMP12]], ptr align 2 [[TMP6]], <vscale x 8 x i1> [[TMP11]])
-; FF-NEXT:    [[TMP13:%.*]] = select <vscale x 8 x i1> [[FF_PROCESSED_MASK]], <vscale x 8 x i1> [[TMP4]], <vscale x 8 x i1> zeroinitializer
-; FF-NEXT:    [[TMP14:%.*]] = call i1 @llvm.vector.reduce.or.nxv8i1(<vscale x 8 x i1> [[TMP13]])
-; FF-NEXT:    [[CURRENT_ITERATION_NEXT]] = add nuw i64 [[TMP9]], [[IV]]
-; FF-NEXT:    [[TMP15:%.*]] = add i64 [[CURRENT_ITERATION_NEXT]], [[TMP1]]
-; FF-NEXT:    [[TMP16:%.*]] = icmp uge i64 [[TMP15]], 20
+; FF-NEXT:    call void @llvm.vp.store.nxv8i16.p0(<vscale x 8 x i16> [[TMP12]], ptr align 2 [[TMP6]], <vscale x 8 x i1> [[TMP5]], i32 [[TMP0]])
+; FF-NEXT:    [[TMP8:%.*]] = freeze <vscale x 8 x i1> [[TMP3]]
+; FF-NEXT:    [[TMP9:%.*]] = call i1 @llvm.vp.reduce.or.nxv8i1(i1 false, <vscale x 8 x i1> [[TMP8]], <vscale x 8 x i1> splat (i1 true), i32 [[TMP0]])
+; FF-NEXT:    [[TMP14:%.*]] = or i1 [[TMP9]], false
+; FF-NEXT:    [[TMP11:%.*]] = zext i32 [[TMP0]] to i64
+; FF-NEXT:    [[CURRENT_ITERATION_NEXT]] = add i64 [[TMP11]], [[IV]]
+; FF-NEXT:    [[AVL_NEXT]] = sub nuw i64 [[AVL]], [[TMP11]]
+; FF-NEXT:    [[TMP13:%.*]] = icmp eq i64 [[AVL_NEXT]], 0
 ; FF-NEXT:    br i1 [[TMP14]], label %[[VECTOR_EARLY_EXIT:.*]], label %[[VECTOR_BODY_INTERIM]]
 ; FF:       [[VECTOR_BODY_INTERIM]]:
-; FF-NEXT:    br i1 [[TMP16]], label %[[MIDDLE_BLOCK:.*]], label %[[FOR_BODY]], !llvm.loop [[LOOP11:![0-9]+]]
+; FF-NEXT:    br i1 [[TMP13]], label %[[MIDDLE_BLOCK:.*]], label %[[FOR_BODY]], !llvm.loop [[LOOP11:![0-9]+]]
 ; FF:       [[MIDDLE_BLOCK]]:
-; FF-NEXT:    [[CMP_N:%.*]] = icmp eq i64 20, [[CURRENT_ITERATION_NEXT]]
-; FF-NEXT:    br i1 [[CMP_N]], label %[[EXIT:.*]], label %[[SCALAR_PH]]
+; FF-NEXT:    br label %[[EXIT:.*]]
 ; FF:       [[VECTOR_EARLY_EXIT]]:
 ; FF-NEXT:    br label %[[EXIT]]
-; FF:       [[SCALAR_PH]]:
-; FF-NEXT:    [[BC_RESUME_VAL:%.*]] = phi i64 [ [[CURRENT_ITERATION_NEXT]], %[[MIDDLE_BLOCK]] ], [ 0, %[[ENTRY]] ]
-; FF-NEXT:    br label %[[FOR_BODY1:.*]]
-; FF:       [[FOR_BODY1]]:
-; FF-NEXT:    [[IV1:%.*]] = phi i64 [ [[BC_RESUME_VAL]], %[[SCALAR_PH]] ], [ [[IV_NEXT:%.*]], %[[FOR_INC:.*]] ]
-; FF-NEXT:    [[EE_ADDR1:%.*]] = getelementptr inbounds nuw i16, ptr [[PRED]], i64 [[IV1]]
-; FF-NEXT:    [[EE_VAL:%.*]] = load i16, ptr [[EE_ADDR1]], align 2
-; FF-NEXT:    [[EE_COND:%.*]] = icmp sgt i16 [[EE_VAL]], 500
-; FF-NEXT:    br i1 [[EE_COND]], label %[[EXIT]], label %[[FOR_INC]]
-; FF:       [[FOR_INC]]:
-; FF-NEXT:    [[ST_ADDR:%.*]] = getelementptr inbounds nuw i16, ptr [[ARRAY]], i64 [[IV1]]
-; FF-NEXT:    [[DATA:%.*]] = load i16, ptr [[ST_ADDR]], align 2
-; FF-NEXT:    [[INC:%.*]] = add nsw i16 [[DATA]], 1
-; FF-NEXT:    store i16 [[INC]], ptr [[ST_ADDR]], align 2
-; FF-NEXT:    [[IV_NEXT]] = add nuw nsw i64 [[IV1]], 1
-; FF-NEXT:    [[COUNTED_COND:%.*]] = icmp eq i64 [[IV_NEXT]], 20
-; FF-NEXT:    br i1 [[COUNTED_COND]], label %[[EXIT]], label %[[FOR_BODY1]], !llvm.loop [[LOOP12:![0-9]+]]
 ; FF:       [[EXIT]]:
 ; FF-NEXT:    ret void
 ;
@@ -1502,7 +1478,7 @@ define i32 @uncountable_exit_with_separate_exit_block(ptr dereferenceable(40) no
 ; FF-NEXT:    [[INDEX_NEXT]] = add nuw i64 [[INDEX]], [[TMP1]]
 ; FF-NEXT:    [[TMP9:%.*]] = icmp eq i64 [[INDEX_NEXT]], [[N_VEC]]
 ; FF-NEXT:    [[TMP10:%.*]] = or i1 [[TMP8]], [[TMP9]]
-; FF-NEXT:    br i1 [[TMP10]], label %[[MIDDLE_BLOCK:.*]], label %[[VECTOR_BODY]], !llvm.loop [[LOOP13:![0-9]+]]
+; FF-NEXT:    br i1 [[TMP10]], label %[[MIDDLE_BLOCK:.*]], label %[[VECTOR_BODY]], !llvm.loop [[LOOP12:![0-9]+]]
 ; FF:       [[MIDDLE_BLOCK]]:
 ; FF-NEXT:    [[TMP11:%.*]] = call i64 @llvm.experimental.cttz.elts.i64.nxv8i1(<vscale x 8 x i1> [[TMP4]], i1 false)
 ; FF-NEXT:    [[TMP12:%.*]] = add i64 [[INDEX]], [[TMP11]]
@@ -1524,7 +1500,7 @@ define i32 @uncountable_exit_with_separate_exit_block(ptr dereferenceable(40) no
 ; FF:       [[FOR_INC]]:
 ; FF-NEXT:    [[IV_NEXT]] = add nuw nsw i64 [[IV]], 1
 ; FF-NEXT:    [[COUNTED_COND:%.*]] = icmp eq i64 [[IV_NEXT]], 20
-; FF-NEXT:    br i1 [[COUNTED_COND]], label %[[EXIT_COUNTABLE]], label %[[FOR_BODY]], !llvm.loop [[LOOP14:![0-9]+]]
+; FF-NEXT:    br i1 [[COUNTED_COND]], label %[[EXIT_COUNTABLE]], label %[[FOR_BODY]], !llvm.loop [[LOOP13:![0-9]+]]
 ; FF:       [[EXIT_COUNTABLE]]:
 ; FF-NEXT:    ret i32 0
 ; FF:       [[EXIT_UNCOUNTABLE]]:
@@ -1627,7 +1603,7 @@ define void @interleaved_stores_after_early_exit(ptr noalias %dst, ptr align 2 d
 ; FF-NEXT:    [[TMP12:%.*]] = icmp eq i64 [[AVL_NEXT]], 0
 ; FF-NEXT:    br i1 [[TMP10]], label %[[VECTOR_EARLY_EXIT:.*]], label %[[VECTOR_BODY_INTERIM]]
 ; FF:       [[VECTOR_BODY_INTERIM]]:
-; FF-NEXT:    br i1 [[TMP12]], label %[[MIDDLE_BLOCK:.*]], label %[[VECTOR_BODY]], !llvm.loop [[LOOP15:![0-9]+]]
+; FF-NEXT:    br i1 [[TMP12]], label %[[MIDDLE_BLOCK:.*]], label %[[VECTOR_BODY]], !llvm.loop [[LOOP14:![0-9]+]]
 ; FF:       [[MIDDLE_BLOCK]]:
 ; FF-NEXT:    br label %[[EXIT:.*]]
 ; FF:       [[VECTOR_EARLY_EXIT]]:
@@ -1743,7 +1719,7 @@ define void @interleaved_stores_before_early_exit(ptr noalias %dst, ptr align 2 
 ; FF-NEXT:    [[INDEX_NEXT]] = add nuw i64 [[INDEX]], [[TMP1]]
 ; FF-NEXT:    [[TMP9:%.*]] = icmp eq i64 [[INDEX_NEXT]], [[N_VEC]]
 ; FF-NEXT:    [[TMP10:%.*]] = or i1 [[TMP8]], [[TMP9]]
-; FF-NEXT:    br i1 [[TMP10]], label %[[MIDDLE_BLOCK:.*]], label %[[VECTOR_BODY]], !llvm.loop [[LOOP16:![0-9]+]]
+; FF-NEXT:    br i1 [[TMP10]], label %[[MIDDLE_BLOCK:.*]], label %[[VECTOR_BODY]], !llvm.loop [[LOOP15:![0-9]+]]
 ; FF:       [[MIDDLE_BLOCK]]:
 ; FF-NEXT:    [[TMP11:%.*]] = call i64 @llvm.experimental.cttz.elts.i64.nxv8i1(<vscale x 8 x i1> [[TMP4]], i1 false)
 ; FF-NEXT:    [[TMP12:%.*]] = add i64 [[INDEX]], [[TMP11]]
@@ -1767,7 +1743,7 @@ define void @interleaved_stores_before_early_exit(ptr noalias %dst, ptr align 2 
 ; FF:       [[LOOP_LATCH]]:
 ; FF-NEXT:    [[IV_NEXT]] = add nuw nsw i64 [[IV]], 1
 ; FF-NEXT:    [[EC:%.*]] = icmp eq i64 [[IV_NEXT]], 20
-; FF-NEXT:    br i1 [[EC]], label %[[EXIT]], label %[[LOOP_HEADER]], !llvm.loop [[LOOP17:![0-9]+]]
+; FF-NEXT:    br i1 [[EC]], label %[[EXIT]], label %[[LOOP_HEADER]], !llvm.loop [[LOOP16:![0-9]+]]
 ; FF:       [[EXIT]]:
 ; FF-NEXT:    ret void
 ;
@@ -1886,7 +1862,7 @@ define void @reverse_interleaved_stores_before_early_exit(ptr noalias %dst, ptr 
 ; FF-NEXT:    [[INDEX_NEXT]] = add nuw i64 [[INDEX]], [[TMP1]]
 ; FF-NEXT:    [[TMP13:%.*]] = icmp eq i64 [[INDEX_NEXT]], [[N_VEC]]
 ; FF-NEXT:    [[TMP14:%.*]] = or i1 [[TMP12]], [[TMP13]]
-; FF-NEXT:    br i1 [[TMP14]], label %[[MIDDLE_BLOCK:.*]], label %[[VECTOR_BODY]], !llvm.loop [[LOOP18:![0-9]+]]
+; FF-NEXT:    br i1 [[TMP14]], label %[[MIDDLE_BLOCK:.*]], label %[[VECTOR_BODY]], !llvm.loop [[LOOP17:![0-9]+]]
 ; FF:       [[MIDDLE_BLOCK]]:
 ; FF-NEXT:    [[TMP15:%.*]] = call i64 @llvm.experimental.cttz.elts.i64.nxv2i1(<vscale x 2 x i1> [[TMP7]], i1 false)
 ; FF-NEXT:    [[TMP16:%.*]] = add i64 [[INDEX]], [[TMP15]]
@@ -1911,7 +1887,7 @@ define void @reverse_interleaved_stores_before_early_exit(ptr noalias %dst, ptr 
 ; FF:       [[LOOP_LATCH]]:
 ; FF-NEXT:    [[IV_NEXT]] = add nuw nsw i64 [[IV]], 1
 ; FF-NEXT:    [[EC:%.*]] = icmp eq i64 [[IV_NEXT]], 20
-; FF-NEXT:    br i1 [[EC]], label %[[EXIT]], label %[[LOOP_HEADER]], !llvm.loop [[LOOP19:![0-9]+]]
+; FF-NEXT:    br i1 [[EC]], label %[[EXIT]], label %[[LOOP_HEADER]], !llvm.loop [[LOOP18:![0-9]+]]
 ; FF:       [[EXIT]]:
 ; FF-NEXT:    ret void
 ;

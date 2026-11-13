@@ -393,8 +393,7 @@ struct VPlanTransforms {
   /// Check if all loads in the loop are dereferenceable. Iterates over the
   /// loop body blocks reachable from \p HeaderVPBB. Returns false if any
   /// non-dereferenceable load is found, unless \p FaultingLoads is provided, in
-  /// which case forward unit-stride ones are collected there to be widened as
-  /// fault-only-first loads.
+  /// which case they are collected there.
   static bool
   areAllLoadsDereferenceable(VPBasicBlock *HeaderVPBB, Loop *TheLoop,
                              PredicatedScalarEvolution &PSE, DominatorTree &DT,
