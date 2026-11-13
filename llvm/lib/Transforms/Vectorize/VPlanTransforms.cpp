@@ -3634,10 +3634,37 @@ bool VPlanTransforms::handleUncountableEarlyExits(
   }
 
   SmallVector<VPInstruction *> FaultingLoads;
+  bool MaskAfterExits = !SideEffectVPBBs.empty();
+  auto CanHandleFaultingLoads = [&]() {
+    if (!areAllLoadsDereferenceable(HeaderVPBB, TheLoop, PSE, DT, AC,
+                                    AllowFirstFaultingLoads ? &FaultingLoads
+                                                            : nullptr))
+      return false;
+    // A load after all early exits only executes on the lanes the scalar loop
+    // executes, so masking it with the lanes before the exits is enough.
+    // TODO: Consider applying this without fault-only-first load support.
+    auto EarlyExits = vputils::getEarlyExits(Plan, MiddleVPBB);
+    bool HasLoadsAfterExits = false;
+    erase_if(FaultingLoads, [&](VPInstruction *Load) {
+      if (!all_of(EarlyExits, [&](const auto &Exit) {
+            return VPDT.properlyDominates(Exit.first, Load->getParent());
+          }))
+        return false;
+      HasLoadsAfterExits = true;
+      return true;
+    });
+    // Only forward unit-stride loads can be widened to fault-only-first loads.
+    if (any_of(FaultingLoads, [&](VPInstruction *Load) {
+          return vputils::getConstantStride(Load->getOperand(0),
+                                            Load->getScalarType(), PSE,
+                                            TheLoop) != 1;
+        }))
+      return false;
+    MaskAfterExits |= HasLoadsAfterExits;
+    return true;
+  };
   if (Style == UncountableExitStyle::MaskedHandleExitInVectorLoop &&
-      !areAllLoadsDereferenceable(HeaderVPBB, TheLoop, PSE, DT, AC,
-                                  AllowFirstFaultingLoads ? &FaultingLoads
-                                                          : nullptr)) {
+      !CanHandleFaultingLoads()) {
     if (SideEffectVPBBs.empty()) {
       reportVectorizationFailure(
           "Auto-vectorization of early exit loops with potentially "
@@ -3647,13 +3674,13 @@ bool VPlanTransforms::handleUncountableEarlyExits(
     }
     Style = UncountableExitStyle::MaskedHandleExitInScalarLoop;
   }
-  // Predicate everything after each potentially faulting load on the lanes it
-  // actually loaded. Like side effects, faulting loads after an early exit must
-  // be masked with the lanes before the exit, so they must be dominated by it.
+  // Predicate everything after each fault-only-first load on the lanes it
+  // actually loaded. Like side effects, fault-only-first loads after an early
+  // exit must be masked with the lanes before the exit, so they must be
+  // dominated by it.
   bool HasFaultingLoads =
       Style == UncountableExitStyle::MaskedHandleExitInVectorLoop &&
       !FaultingLoads.empty();
-  bool MaskAfterExits = !SideEffectVPBBs.empty();
   if (HasFaultingLoads) {
     for (auto [EarlyExitingVPBB, ExitBlock] :
          vputils::getEarlyExits(Plan, MiddleVPBB)) {
@@ -3745,7 +3772,7 @@ bool VPlanTransforms::handleUncountableEarlyExits(
       Term->setOperand(0, VPBuilder(Term).createFreeze(Term->getOperand(0)));
     }
 
-    if (!SideEffectVPBBs.empty() || HasFaultingLoads) {
+    if (MaskAfterExits || HasFaultingLoads) {
       // Split the latch in case it has recipes with side effects. It was
       // already split when branching from fault-only-first loads.
       if (!HasFaultingLoads)
