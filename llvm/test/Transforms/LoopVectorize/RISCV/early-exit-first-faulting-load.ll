@@ -22,8 +22,7 @@ define i64 @early_exit_first_faulting_load(ptr %cond) {
 ; CHECK-NEXT:    [[TMP3:%.*]] = icmp slt <4 x i32> [[WIDE_LOAD_FF_VAL]], zeroinitializer
 ; CHECK-NEXT:    [[TMP4:%.*]] = select <4 x i1> [[FF_PROCESSED_MASK]], <4 x i1> [[TMP3]], <4 x i1> zeroinitializer
 ; CHECK-NEXT:    [[TMP5:%.*]] = freeze <4 x i1> [[TMP4]]
-; CHECK-NEXT:    [[TMP6:%.*]] = select <4 x i1> [[FF_PROCESSED_MASK]], <4 x i1> [[TMP5]], <4 x i1> zeroinitializer
-; CHECK-NEXT:    [[TMP7:%.*]] = call i1 @llvm.vector.reduce.or.v4i1(<4 x i1> [[TMP6]])
+; CHECK-NEXT:    [[TMP7:%.*]] = call i1 @llvm.vector.reduce.or.v4i1(<4 x i1> [[TMP5]])
 ; CHECK-NEXT:    [[CURRENT_ITERATION_NEXT]] = add nuw i64 [[TMP1]], [[INDEX]]
 ; CHECK-NEXT:    [[TMP8:%.*]] = add i64 [[CURRENT_ITERATION_NEXT]], 4
 ; CHECK-NEXT:    [[TMP9:%.*]] = icmp uge i64 [[TMP8]], 100
@@ -35,7 +34,7 @@ define i64 @early_exit_first_faulting_load(ptr %cond) {
 ; CHECK-NEXT:    [[CMP_N:%.*]] = icmp eq i64 100, [[CURRENT_ITERATION_NEXT]]
 ; CHECK-NEXT:    br i1 [[CMP_N]], label %[[EXIT:.*]], label %[[SCALAR_PH:.*]]
 ; CHECK:       [[VECTOR_EARLY_EXIT]]:
-; CHECK-NEXT:    [[TMP10:%.*]] = call i64 @llvm.experimental.cttz.elts.i64.v4i1(<4 x i1> [[TMP6]], i1 false)
+; CHECK-NEXT:    [[TMP10:%.*]] = call i64 @llvm.experimental.cttz.elts.i64.v4i1(<4 x i1> [[TMP5]], i1 false)
 ; CHECK-NEXT:    [[TMP11:%.*]] = add i64 [[INDEX]], [[TMP10]]
 ; CHECK-NEXT:    br label %[[EXIT]]
 ; CHECK:       [[SCALAR_PH]]:
@@ -96,8 +95,7 @@ define i64 @early_exit_non_constant_bounds(ptr %cond, i64 %start, i64 %end) {
 ; CHECK-NEXT:    [[TMP5:%.*]] = icmp slt <4 x i32> [[WIDE_LOAD_FF_VAL]], zeroinitializer
 ; CHECK-NEXT:    [[TMP6:%.*]] = select <4 x i1> [[FF_PROCESSED_MASK]], <4 x i1> [[TMP5]], <4 x i1> zeroinitializer
 ; CHECK-NEXT:    [[TMP7:%.*]] = freeze <4 x i1> [[TMP6]]
-; CHECK-NEXT:    [[TMP8:%.*]] = select <4 x i1> [[FF_PROCESSED_MASK]], <4 x i1> [[TMP7]], <4 x i1> zeroinitializer
-; CHECK-NEXT:    [[TMP9:%.*]] = call i1 @llvm.vector.reduce.or.v4i1(<4 x i1> [[TMP8]])
+; CHECK-NEXT:    [[TMP9:%.*]] = call i1 @llvm.vector.reduce.or.v4i1(<4 x i1> [[TMP7]])
 ; CHECK-NEXT:    [[CURRENT_ITERATION_NEXT]] = add nuw i64 [[TMP3]], [[INDEX]]
 ; CHECK-NEXT:    [[TMP10:%.*]] = add i64 [[CURRENT_ITERATION_NEXT]], 4
 ; CHECK-NEXT:    [[TMP11:%.*]] = icmp uge i64 [[TMP10]], [[TMP0]]
@@ -110,7 +108,7 @@ define i64 @early_exit_non_constant_bounds(ptr %cond, i64 %start, i64 %end) {
 ; CHECK-NEXT:    [[CMP_N:%.*]] = icmp eq i64 [[TMP0]], [[CURRENT_ITERATION_NEXT]]
 ; CHECK-NEXT:    br i1 [[CMP_N]], label %[[EXIT:.*]], label %[[SCALAR_PH]]
 ; CHECK:       [[VECTOR_EARLY_EXIT]]:
-; CHECK-NEXT:    [[TMP13:%.*]] = call i64 @llvm.experimental.cttz.elts.i64.v4i1(<4 x i1> [[TMP8]], i1 false)
+; CHECK-NEXT:    [[TMP13:%.*]] = call i64 @llvm.experimental.cttz.elts.i64.v4i1(<4 x i1> [[TMP7]], i1 false)
 ; CHECK-NEXT:    [[TMP14:%.*]] = add i64 [[INDEX]], [[TMP13]]
 ; CHECK-NEXT:    [[TMP15:%.*]] = add i64 [[START]], [[TMP14]]
 ; CHECK-NEXT:    br label %[[EXIT]]
@@ -174,14 +172,11 @@ define void @early_exit_multiple_first_faulting_loads(ptr %s1, ptr %s2) {
 ; CHECK-NEXT:    [[TMP5:%.*]] = zext i32 [[WIDE_LOAD_FF_COUNT3]] to i64
 ; CHECK-NEXT:    [[TMP6:%.*]] = icmp ult i64 [[TMP5]], [[TMP1]]
 ; CHECK-NEXT:    [[TMP7:%.*]] = select i1 [[TMP6]], i64 [[TMP5]], i64 [[TMP1]]
-; CHECK-NEXT:    [[FF_PROCESSED_MASK:%.*]] = call <4 x i1> @llvm.get.active.lane.mask.v4i1.i64(i64 0, i64 [[TMP7]])
-; CHECK-NEXT:    [[TMP8:%.*]] = call <4 x i1> @llvm.get.active.lane.mask.v4i1.i64(i64 0, i64 [[TMP5]])
-; CHECK-NEXT:    [[TMP10:%.*]] = select <4 x i1> [[TMP2]], <4 x i1> [[TMP8]], <4 x i1> zeroinitializer
+; CHECK-NEXT:    [[TMP10:%.*]] = call <4 x i1> @llvm.get.active.lane.mask.v4i1.i64(i64 0, i64 [[TMP7]])
 ; CHECK-NEXT:    [[TMP11:%.*]] = icmp ne <4 x i8> [[WIDE_LOAD_FF_VAL]], [[WIDE_LOAD_FF_VAL2]]
 ; CHECK-NEXT:    [[TMP12:%.*]] = select <4 x i1> [[TMP10]], <4 x i1> [[TMP11]], <4 x i1> zeroinitializer
 ; CHECK-NEXT:    [[TMP13:%.*]] = freeze <4 x i1> [[TMP12]]
-; CHECK-NEXT:    [[TMP14:%.*]] = select <4 x i1> [[FF_PROCESSED_MASK]], <4 x i1> [[TMP13]], <4 x i1> zeroinitializer
-; CHECK-NEXT:    [[TMP15:%.*]] = call i1 @llvm.vector.reduce.or.v4i1(<4 x i1> [[TMP14]])
+; CHECK-NEXT:    [[TMP15:%.*]] = call i1 @llvm.vector.reduce.or.v4i1(<4 x i1> [[TMP13]])
 ; CHECK-NEXT:    [[CURRENT_ITERATION_NEXT]] = add nuw i64 [[TMP7]], [[INDEX]]
 ; CHECK-NEXT:    [[TMP16:%.*]] = add i64 [[CURRENT_ITERATION_NEXT]], 4
 ; CHECK-NEXT:    [[TMP17:%.*]] = icmp uge i64 [[TMP16]], 100
@@ -256,8 +251,7 @@ define ptr @early_exit_pointer_induction(ptr %base, ptr %end) {
 ; CHECK-NEXT:    [[TMP3:%.*]] = icmp ne <4 x i8> [[WIDE_LOAD_FF_VAL]], zeroinitializer
 ; CHECK-NEXT:    [[TMP4:%.*]] = select <4 x i1> [[FF_PROCESSED_MASK]], <4 x i1> [[TMP3]], <4 x i1> zeroinitializer
 ; CHECK-NEXT:    [[TMP5:%.*]] = freeze <4 x i1> [[TMP4]]
-; CHECK-NEXT:    [[TMP6:%.*]] = select <4 x i1> [[FF_PROCESSED_MASK]], <4 x i1> [[TMP5]], <4 x i1> zeroinitializer
-; CHECK-NEXT:    [[TMP7:%.*]] = call i1 @llvm.vector.reduce.or.v4i1(<4 x i1> [[TMP6]])
+; CHECK-NEXT:    [[TMP7:%.*]] = call i1 @llvm.vector.reduce.or.v4i1(<4 x i1> [[TMP5]])
 ; CHECK-NEXT:    [[CURRENT_ITERATION_NEXT]] = add nuw i64 [[TMP1]], [[INDEX]]
 ; CHECK-NEXT:    [[TMP8:%.*]] = add i64 [[CURRENT_ITERATION_NEXT]], 4
 ; CHECK-NEXT:    [[TMP9:%.*]] = icmp uge i64 [[TMP8]], [[TMP0]]
@@ -270,7 +264,7 @@ define ptr @early_exit_pointer_induction(ptr %base, ptr %end) {
 ; CHECK-NEXT:    [[CMP_N:%.*]] = icmp eq i64 [[TMP0]], [[CURRENT_ITERATION_NEXT]]
 ; CHECK-NEXT:    br i1 [[CMP_N]], label %[[WHILE_COND_LOOPEXIT_CRIT_EDGE:.*]], label %[[SCALAR_PH]]
 ; CHECK:       [[VECTOR_EARLY_EXIT]]:
-; CHECK-NEXT:    [[TMP11:%.*]] = call i64 @llvm.experimental.cttz.elts.i64.v4i1(<4 x i1> [[TMP6]], i1 false)
+; CHECK-NEXT:    [[TMP11:%.*]] = call i64 @llvm.experimental.cttz.elts.i64.v4i1(<4 x i1> [[TMP5]], i1 false)
 ; CHECK-NEXT:    [[TMP12:%.*]] = add i64 [[INDEX]], [[TMP11]]
 ; CHECK-NEXT:    [[TMP13:%.*]] = getelementptr i8, ptr [[BASE]], i64 [[TMP12]]
 ; CHECK-NEXT:    br label %[[LOOPEXIT:.*]]
@@ -347,14 +341,12 @@ define i64 @condition-chain(i64 %net, ptr %0, ptr %1) {
 ; CHECK-NEXT:    [[TMP14:%.*]] = zext i32 [[WIDE_LOAD_FF_COUNT3]] to i64
 ; CHECK-NEXT:    [[TMP15:%.*]] = icmp ult i64 [[TMP14]], [[TMP7]]
 ; CHECK-NEXT:    [[TMP16:%.*]] = select i1 [[TMP15]], i64 [[TMP14]], i64 [[TMP7]]
-; CHECK-NEXT:    [[FF_PROCESSED_MASK:%.*]] = call <4 x i1> @llvm.get.active.lane.mask.v4i1.i64(i64 0, i64 [[TMP16]])
-; CHECK-NEXT:    [[TMP17:%.*]] = call <4 x i1> @llvm.get.active.lane.mask.v4i1.i64(i64 0, i64 [[TMP14]])
+; CHECK-NEXT:    [[TMP17:%.*]] = call <4 x i1> @llvm.get.active.lane.mask.v4i1.i64(i64 0, i64 [[TMP16]])
 ; CHECK-NEXT:    [[TMP19:%.*]] = select <4 x i1> [[TMP12]], <4 x i1> [[TMP17]], <4 x i1> zeroinitializer
 ; CHECK-NEXT:    [[TMP20:%.*]] = icmp ne <4 x i64> [[WIDE_LOAD_FF_VAL2]], zeroinitializer
 ; CHECK-NEXT:    [[TMP21:%.*]] = select <4 x i1> [[TMP19]], <4 x i1> [[TMP20]], <4 x i1> zeroinitializer
 ; CHECK-NEXT:    [[TMP22:%.*]] = freeze <4 x i1> [[TMP21]]
-; CHECK-NEXT:    [[TMP23:%.*]] = select <4 x i1> [[FF_PROCESSED_MASK]], <4 x i1> [[TMP22]], <4 x i1> zeroinitializer
-; CHECK-NEXT:    [[TMP24:%.*]] = call i1 @llvm.vector.reduce.or.v4i1(<4 x i1> [[TMP23]])
+; CHECK-NEXT:    [[TMP24:%.*]] = call i1 @llvm.vector.reduce.or.v4i1(<4 x i1> [[TMP22]])
 ; CHECK-NEXT:    [[CURRENT_ITERATION_NEXT]] = add nuw i64 [[TMP16]], [[INDEX]]
 ; CHECK-NEXT:    [[TMP25:%.*]] = add i64 [[CURRENT_ITERATION_NEXT]], 4
 ; CHECK-NEXT:    [[TMP26:%.*]] = icmp uge i64 [[TMP25]], [[TMP2]]
@@ -441,14 +433,13 @@ define i64 @chained_exits_guarded_load(ptr %a, ptr %b) {
 ; CHECK-NEXT:    [[TMP10:%.*]] = zext i32 [[WIDE_LOAD_FF_COUNT3]] to i64
 ; CHECK-NEXT:    [[TMP11:%.*]] = icmp ult i64 [[TMP10]], [[TMP1]]
 ; CHECK-NEXT:    [[TMP12:%.*]] = select i1 [[TMP11]], i64 [[TMP10]], i64 [[TMP1]]
-; CHECK-NEXT:    [[FF_PROCESSED_MASK:%.*]] = call <4 x i1> @llvm.get.active.lane.mask.v4i1.i64(i64 0, i64 [[TMP12]])
-; CHECK-NEXT:    [[TMP13:%.*]] = call <4 x i1> @llvm.get.active.lane.mask.v4i1.i64(i64 0, i64 [[TMP10]])
+; CHECK-NEXT:    [[TMP13:%.*]] = call <4 x i1> @llvm.get.active.lane.mask.v4i1.i64(i64 0, i64 [[TMP12]])
 ; CHECK-NEXT:    [[TMP15:%.*]] = select <4 x i1> [[TMP8]], <4 x i1> [[TMP13]], <4 x i1> zeroinitializer
 ; CHECK-NEXT:    [[TMP16:%.*]] = icmp slt <4 x i32> [[WIDE_LOAD_FF_VAL2]], zeroinitializer
 ; CHECK-NEXT:    [[TMP17:%.*]] = select <4 x i1> [[TMP15]], <4 x i1> [[TMP16]], <4 x i1> zeroinitializer
 ; CHECK-NEXT:    [[TMP18:%.*]] = select <4 x i1> [[TMP5]], <4 x i1> splat (i1 true), <4 x i1> [[TMP17]]
 ; CHECK-NEXT:    [[TMP19:%.*]] = freeze <4 x i1> [[TMP18]]
-; CHECK-NEXT:    [[TMP20:%.*]] = select <4 x i1> [[FF_PROCESSED_MASK]], <4 x i1> [[TMP19]], <4 x i1> zeroinitializer
+; CHECK-NEXT:    [[TMP20:%.*]] = select <4 x i1> [[TMP13]], <4 x i1> [[TMP19]], <4 x i1> zeroinitializer
 ; CHECK-NEXT:    [[TMP21:%.*]] = call i1 @llvm.vector.reduce.or.v4i1(<4 x i1> [[TMP20]])
 ; CHECK-NEXT:    [[CURRENT_ITERATION_NEXT]] = add nuw i64 [[TMP12]], [[INDEX]]
 ; CHECK-NEXT:    [[TMP22:%.*]] = add i64 [[CURRENT_ITERATION_NEXT]], 4
@@ -548,8 +539,7 @@ define void @early_exit_reverse_store(ptr %cond, ptr noalias %b, ptr noalias %x,
 ; CHECK-NEXT:    [[REVERSE:%.*]] = shufflevector <4 x i1> [[TMP8]], <4 x i1> poison, <4 x i32> <i32 3, i32 2, i32 1, i32 0>
 ; CHECK-NEXT:    [[REVERSE4:%.*]] = shufflevector <4 x i32> [[WIDE_LOAD_FF_VAL2]], <4 x i32> poison, <4 x i32> <i32 3, i32 2, i32 1, i32 0>
 ; CHECK-NEXT:    call void @llvm.masked.store.v4i32.p0(<4 x i32> [[REVERSE4]], ptr align 4 [[TMP18]], <4 x i1> [[REVERSE]])
-; CHECK-NEXT:    [[TMP19:%.*]] = select <4 x i1> [[TMP2]], <4 x i1> [[TMP6]], <4 x i1> zeroinitializer
-; CHECK-NEXT:    [[TMP20:%.*]] = call i1 @llvm.vector.reduce.or.v4i1(<4 x i1> [[TMP19]])
+; CHECK-NEXT:    [[TMP20:%.*]] = call i1 @llvm.vector.reduce.or.v4i1(<4 x i1> [[TMP6]])
 ; CHECK-NEXT:    [[CURRENT_ITERATION_NEXT]] = add nuw i64 [[TMP1]], [[INDEX]]
 ; CHECK-NEXT:    [[TMP21:%.*]] = add i64 [[CURRENT_ITERATION_NEXT]], 4
 ; CHECK-NEXT:    [[TMP22:%.*]] = icmp uge i64 [[TMP21]], [[N]]
@@ -638,8 +628,7 @@ define void @early_exit_reverse_load(ptr %cond, ptr noalias %b, ptr noalias %x, 
 ; CHECK-NEXT:    [[REVERSE1:%.*]] = shufflevector <4 x i32> [[WIDE_MASKED_LOAD]], <4 x i32> poison, <4 x i32> <i32 3, i32 2, i32 1, i32 0>
 ; CHECK-NEXT:    [[TMP11:%.*]] = getelementptr i32, ptr [[B]], i64 [[INDEX]]
 ; CHECK-NEXT:    call void @llvm.masked.store.v4i32.p0(<4 x i32> [[REVERSE1]], ptr align 4 [[TMP11]], <4 x i1> [[TMP15]])
-; CHECK-NEXT:    [[TMP4:%.*]] = select <4 x i1> [[FF_PROCESSED_MASK]], <4 x i1> [[TMP6]], <4 x i1> zeroinitializer
-; CHECK-NEXT:    [[TMP12:%.*]] = call i1 @llvm.vector.reduce.or.v4i1(<4 x i1> [[TMP4]])
+; CHECK-NEXT:    [[TMP12:%.*]] = call i1 @llvm.vector.reduce.or.v4i1(<4 x i1> [[TMP6]])
 ; CHECK-NEXT:    [[CURRENT_ITERATION_NEXT]] = add nuw i64 [[TMP1]], [[INDEX]]
 ; CHECK-NEXT:    [[TMP13:%.*]] = add i64 [[CURRENT_ITERATION_NEXT]], 4
 ; CHECK-NEXT:    [[TMP14:%.*]] = icmp uge i64 [[TMP13]], [[N]]
@@ -810,8 +799,7 @@ define i32 @early_exit_ff_load_live_out_pre_inc_iv(ptr %cond, i32 %n) {
 ; CHECK-NEXT:    [[TMP4:%.*]] = icmp ne <4 x i8> [[WIDE_LOAD_FF_VAL]], zeroinitializer
 ; CHECK-NEXT:    [[TMP5:%.*]] = select <4 x i1> [[FF_PROCESSED_MASK]], <4 x i1> [[TMP4]], <4 x i1> zeroinitializer
 ; CHECK-NEXT:    [[TMP6:%.*]] = freeze <4 x i1> [[TMP5]]
-; CHECK-NEXT:    [[TMP7:%.*]] = select <4 x i1> [[FF_PROCESSED_MASK]], <4 x i1> [[TMP6]], <4 x i1> zeroinitializer
-; CHECK-NEXT:    [[TMP8:%.*]] = call i1 @llvm.vector.reduce.or.v4i1(<4 x i1> [[TMP7]])
+; CHECK-NEXT:    [[TMP8:%.*]] = call i1 @llvm.vector.reduce.or.v4i1(<4 x i1> [[TMP6]])
 ; CHECK-NEXT:    [[CURRENT_ITERATION_NEXT]] = add nuw i32 [[WIDE_LOAD_FF_COUNT]], [[INDEX]]
 ; CHECK-NEXT:    [[TMP9:%.*]] = add i32 [[CURRENT_ITERATION_NEXT]], 4
 ; CHECK-NEXT:    [[TMP10:%.*]] = icmp uge i32 [[TMP9]], [[TMP0]]
@@ -885,8 +873,7 @@ define i64 @early_exit_ff_load_value_live_out(ptr %p, i64 %n) {
 ; CHECK-NEXT:    [[TMP4:%.*]] = icmp ne <4 x i64> [[WIDE_LOAD_FF_VAL]], zeroinitializer
 ; CHECK-NEXT:    [[TMP5:%.*]] = select <4 x i1> [[FF_PROCESSED_MASK]], <4 x i1> [[TMP4]], <4 x i1> zeroinitializer
 ; CHECK-NEXT:    [[TMP6:%.*]] = freeze <4 x i1> [[TMP5]]
-; CHECK-NEXT:    [[TMP7:%.*]] = select <4 x i1> [[FF_PROCESSED_MASK]], <4 x i1> [[TMP6]], <4 x i1> zeroinitializer
-; CHECK-NEXT:    [[TMP8:%.*]] = call i1 @llvm.vector.reduce.or.v4i1(<4 x i1> [[TMP7]])
+; CHECK-NEXT:    [[TMP8:%.*]] = call i1 @llvm.vector.reduce.or.v4i1(<4 x i1> [[TMP6]])
 ; CHECK-NEXT:    [[CURRENT_ITERATION_NEXT]] = add nuw i64 [[TMP2]], [[INDEX]]
 ; CHECK-NEXT:    [[TMP9:%.*]] = add i64 [[CURRENT_ITERATION_NEXT]], 4
 ; CHECK-NEXT:    [[TMP10:%.*]] = icmp uge i64 [[TMP9]], [[TMP0]]
@@ -897,7 +884,7 @@ define i64 @early_exit_ff_load_value_live_out(ptr %p, i64 %n) {
 ; CHECK-NEXT:    [[CMP_N:%.*]] = icmp eq i64 [[TMP0]], [[CURRENT_ITERATION_NEXT]]
 ; CHECK-NEXT:    br i1 [[CMP_N]], label %[[EXIT:.*]], label %[[SCALAR_PH]]
 ; CHECK:       [[VECTOR_EARLY_EXIT]]:
-; CHECK-NEXT:    [[FIRST_ACTIVE_LANE:%.*]] = call i64 @llvm.experimental.cttz.elts.i64.v4i1(<4 x i1> [[TMP7]], i1 false)
+; CHECK-NEXT:    [[FIRST_ACTIVE_LANE:%.*]] = call i64 @llvm.experimental.cttz.elts.i64.v4i1(<4 x i1> [[TMP6]], i1 false)
 ; CHECK-NEXT:    [[TMP11:%.*]] = extractelement <4 x i64> [[WIDE_LOAD_FF_VAL]], i64 [[FIRST_ACTIVE_LANE]]
 ; CHECK-NEXT:    br label %[[EXIT]]
 ; CHECK:       [[SCALAR_PH]]:

@@ -6878,18 +6878,27 @@ bool VPlanTransforms::handleFirstFaultingLoads(VPlan &Plan, bool IsScalarVF,
 
   // The loop steps by the minimum of the loaded lanes of all fault-only-first
   // loads. Lower each FaultOnlyFirstMask to an active lane mask over the lanes
-  // its fault-only-first load actually loaded. VPlanPredicator already applied
-  // it to everything that depends on the load. A block is visited before the
-  // blocks it dominates, so each load is visited before its masks and the loads
-  // it dominates.
+  // loaded by its fault-only-first load and the ones dominating it.
+  // VPlanPredicator already applied it to everything that depends on the load.
+  // A block is visited before the blocks it dominates, so each load is visited
+  // before its masks and the loads it dominates.
   VPValue *Step = nullptr;
-  DenseMap<VPRecipeBase *, VPValue *> LoadedCounts;
+  DenseMap<VPRecipeBase *, VPValue *> LoadedMasks;
+  SmallPtrSet<VPValue *, 4> FFMasks;
+  VPValue *StepMask = nullptr;
   SmallVector<VPInstruction *> AnyOfs;
+  SmallVector<VPRecipeBase *> ToErase;
   for (VPBasicBlock *VPBB : VPBlockUtils::blocksOnly<VPBasicBlock>(
            vp_depth_first_deep(LoopRegion->getEntry()))) {
     for (VPRecipeBase &R : make_early_inc_range(*VPBB)) {
       if (auto *FFLoad = dyn_cast<VPWidenFirstFaultingLoadRecipe>(&R)) {
-        LoadedCounts[FFLoad] = addFirstFaultingCount(FFLoad, CanIVTy, Step);
+        addFirstFaultingCount(FFLoad, CanIVTy, Step);
+        StepMask =
+            VPBuilder::getToInsertAfter(Step->getDefiningRecipe())
+                .createNaryOp(VPInstruction::ActiveLaneMask, {Zero, Step},
+                              FFLoad->getDebugLoc(), "ff.mask");
+        LoadedMasks[FFLoad] = StepMask;
+        FFMasks.insert(StepMask);
         continue;
       }
       if (match(&R, m_AnyOf(m_VPValue()))) {
@@ -6899,9 +6908,9 @@ bool VPlanTransforms::handleFirstFaultingLoads(VPlan &Plan, bool IsScalarVF,
       if (!match(&R, m_VPInstruction<VPInstruction::FaultOnlyFirstMask>()))
         continue;
       auto *FFMask = cast<VPInstruction>(&R);
-      VPValue *Count =
-          LoadedCounts.lookup(FFMask->getOperand(0)->getDefiningRecipe());
-      if (!Count) {
+      VPValue *LoadedMask =
+          LoadedMasks.lookup(FFMask->getOperand(0)->getDefiningRecipe());
+      if (!LoadedMask) {
         // The load was not widened. For the scalar VF it executes like in the
         // scalar loop, so all its lanes are loaded. Otherwise, scalarizing it
         // would speculatively access lanes the scalar loop may not access.
@@ -6911,21 +6920,52 @@ bool VPlanTransforms::handleFirstFaultingLoads(VPlan &Plan, bool IsScalarVF,
         FFMask->eraseFromParent();
         continue;
       }
-      FFMask->replaceAllUsesWith(VPBuilder(FFMask).createNaryOp(
-          VPInstruction::ActiveLaneMask, {Zero, Count}, FFMask->getDebugLoc()));
+      // The masks are active on a prefix of the lanes, so LoadedMask implies
+      // the masks lowered before it. Their combination by VPlanPredicator,
+      // (logical-and ff.mask, FFMask), is LoadedMask.
+      for (VPUser *U : FFMask->users()) {
+        auto *And = cast<VPRecipeBase>(U);
+        VPValue *Other;
+        if (!match(And, m_c_LogicalAnd(m_Specific(FFMask), m_VPValue(Other))) ||
+            !FFMasks.contains(Other))
+          continue;
+        And->getVPSingleValue()->replaceAllUsesWith(LoadedMask);
+        ToErase.push_back(And);
+      }
+      FFMask->replaceAllUsesWith(LoadedMask);
       FFMask->eraseFromParent();
     }
   }
+  for (VPRecipeBase *And : ToErase)
+    And->eraseFromParent();
   if (!Step)
     return true;
 
-  // Only take an early exit on lanes loaded by all fault-only-first loads.
-  VPValue *StepMask =
-      VPBuilder::getToInsertAfter(Step->getDefiningRecipe())
-          .createNaryOp(VPInstruction::ActiveLaneMask, {Zero, Step},
-                        DebugLoc::getUnknown(), "ff.processed.mask");
+  // Only take an early exit on lanes loaded by all fault-only-first loads. The
+  // mask of the last one is active on exactly those lanes, and VPlanPredicator
+  // already applied it to exit conditions after that load.
+  auto IsMaskedBy = [](VPValue *V, VPValue *Mask) {
+    auto IsMasked = [Mask](VPValue *V) {
+      return V == Mask ||
+             match(V, m_c_LogicalAnd(m_Specific(Mask), m_VPValue()));
+    };
+    match(V, m_Freeze(m_VPValue(V)));
+    if (IsMasked(V))
+      return true;
+    // A blend created by VPlanPredicator for the exit conditions is false on
+    // all lanes that don't select a value masked by Mask.
+    auto *Blend = dyn_cast_or_null<VPBlendRecipe>(V->getDefiningRecipe());
+    if (!Blend || Blend->isNormalized())
+      return false;
+    return all_of(seq(Blend->getNumIncomingValues()), [&](unsigned I) {
+      return match(Blend->getIncomingValue(I), m_False()) ||
+             IsMasked(Blend->getMask(I));
+    });
+  };
   for (VPInstruction *AnyOf : AnyOfs) {
     VPValue *ExitConds = AnyOf->getOperand(0);
+    if (IsMaskedBy(ExitConds, StepMask))
+      continue;
     auto *Processed = cast<VPInstruction>(VPBuilder(AnyOf).createLogicalAnd(
         StepMask, ExitConds, AnyOf->getDebugLoc()));
     ExitConds->replaceUsesWithIf(
