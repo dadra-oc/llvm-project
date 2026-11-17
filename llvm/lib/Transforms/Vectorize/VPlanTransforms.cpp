@@ -3764,10 +3764,13 @@ bool VPlanTransforms::handleUncountableEarlyExits(
 
   if (Style == UncountableExitStyle::MaskedHandleExitInVectorLoop) {
     // Lanes past the exit can be poison that the scalar loop never branched on,
-    // so freeze them to prevent branching on poison.
+    // so freeze them to prevent branching on poison. The masks of lanes loaded
+    // by fault-only-first loads are never poison.
     for (VPBasicBlock *VPBB : vp_rpo_plain_cfg_loop_body(HeaderVPBB)) {
       VPRecipeBase *Term = VPBB->getTerminator();
-      if (!Term || VPBB == LatchVPBB)
+      if (!Term || VPBB == LatchVPBB ||
+          match(Term->getOperand(0),
+                m_VPInstruction<VPInstruction::FaultOnlyFirstMask>()))
         continue;
       Term->setOperand(0, VPBuilder(Term).createFreeze(Term->getOperand(0)));
     }
